@@ -1,0 +1,339 @@
+<?xml version="1.0"?>
+<!--
+  buildscan_rover.urdf.xacro  ── Stage 10
+  ═════════════════════════════════════════
+  BuildScan Rover URDF/Xacro Model
+
+  Robot: 4-wheel differential drive rover
+  Sensors:
+    - Camera (maps to /camera/image_raw)
+    - 2D LiDAR (maps to /scan)
+    - Ultrasonic (represented as frame)
+
+  TF Tree:
+    base_footprint
+      └── base_link
+          ├── front_left_wheel
+          ├── front_right_wheel
+          ├── rear_left_wheel
+          ├── rear_right_wheel
+          ├── camera_link
+          ├── laser (lidar)
+          └── ultrasonic_link
+
+  Usage:
+    xacro buildscan_rover.urdf.xacro use_sim_time:=true > robot.urdf
+    ros2 launch buildscan_bringup simulation.launch.py
+-->
+
+<robot name="buildscan_rover" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PARAMETERS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <xacro:property name="robot_name"       value="buildscan_rover"/>
+
+  <!-- Chassis -->
+  <xacro:property name="chassis_length"   value="0.28"/>
+  <xacro:property name="chassis_width"    value="0.22"/>
+  <xacro:property name="chassis_height"   value="0.08"/>
+  <xacro:property name="chassis_mass"     value="1.5"/>
+
+  <!-- Wheels -->
+  <xacro:property name="wheel_radius"     value="0.033"/>
+  <xacro:property name="wheel_thickness"  value="0.025"/>
+  <xacro:property name="wheel_mass"       value="0.12"/>
+  <xacro:property name="wheel_separation" value="0.160"/>   <!-- track width -->
+  <xacro:property name="wheel_offset_x"   value="0.075"/>   <!-- front/rear from center -->
+
+  <!-- Colors -->
+  <material name="grey">  <color rgba="0.3 0.3 0.3 1.0"/> </material>
+  <material name="black"> <color rgba="0.1 0.1 0.1 1.0"/> </material>
+  <material name="blue">  <color rgba="0.0 0.4 0.8 1.0"/> </material>
+  <material name="white"> <color rgba="1.0 1.0 1.0 1.0"/> </material>
+  <material name="red">   <color rgba="0.8 0.1 0.1 1.0"/> </material>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       INERTIA MACROS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <xacro:macro name="box_inertial" params="mass x y z">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia
+        ixx="${(1/12)*mass*(y*y+z*z)}"
+        iyy="${(1/12)*mass*(x*x+z*z)}"
+        izz="${(1/12)*mass*(x*x+y*y)}"
+        ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="cylinder_inertial" params="mass r h">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia
+        ixx="${(1/12)*mass*(3*r*r+h*h)}"
+        iyy="${(1/12)*mass*(3*r*r+h*h)}"
+        izz="${0.5*mass*r*r}"
+        ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       WHEEL MACRO
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <xacro:macro name="wheel" params="name x_pos y_pos">
+
+    <link name="${name}_wheel">
+      <visual>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+        </geometry>
+      </collision>
+      <xacro:cylinder_inertial mass="${wheel_mass}" r="${wheel_radius}" h="${wheel_thickness}"/>
+    </link>
+
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child  link="${name}_wheel"/>
+      <origin xyz="${x_pos} ${y_pos} 0" rpy="${pi/2} 0 0"/>
+      <axis xyz="0 0 1"/>
+      <dynamics damping="0.05" friction="0.1"/>
+    </joint>
+
+    <!-- Gazebo wheel properties -->
+    <gazebo reference="${name}_wheel">
+      <mu1>1.0</mu1>
+      <mu2>1.0</mu2>
+      <kp>500000</kp>
+      <kd>10</kd>
+      <material>Gazebo/Black</material>
+    </gazebo>
+
+  </xacro:macro>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       BASE LINKS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- base_footprint: zero-height reference frame on the ground -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- base_link: center of the chassis -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+      </geometry>
+    </collision>
+    <xacro:box_inertial mass="${chassis_mass}"
+      x="${chassis_length}" y="${chassis_width}" z="${chassis_height}"/>
+  </link>
+
+  <gazebo reference="base_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       WHEELS — 4WD differential drive
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <xacro:wheel name="front_left"  x_pos=" ${wheel_offset_x}" y_pos=" ${wheel_separation/2}"/>
+  <xacro:wheel name="front_right" x_pos=" ${wheel_offset_x}" y_pos="-${wheel_separation/2}"/>
+  <xacro:wheel name="rear_left"   x_pos="-${wheel_offset_x}" y_pos=" ${wheel_separation/2}"/>
+  <xacro:wheel name="rear_right"  x_pos="-${wheel_offset_x}" y_pos="-${wheel_separation/2}"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       CAMERA SENSOR — maps to /camera/image_raw
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <link name="camera_link">
+    <visual>
+      <geometry> <box size="0.03 0.06 0.03"/> </geometry>
+      <material name="white"/>
+    </visual>
+    <collision>
+      <geometry> <box size="0.03 0.06 0.03"/> </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="0.0001" iyy="0.0001" izz="0.0001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="camera_link"/>
+    <origin xyz="${chassis_length/2 - 0.02} 0 ${chassis_height/2 + 0.03}" rpy="0 0.2 0"/>
+  </joint>
+
+  <!-- Camera optical frame -->
+  <link name="camera_optical_link"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child  link="camera_optical_link"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+
+  <!-- Gazebo camera plugin -->
+  <gazebo reference="camera_link">
+    <sensor type="camera" name="buildscan_camera">
+      <update_rate>10.0</update_rate>
+      <camera name="camera">
+        <horizontal_fov>1.3962634</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.02</near>
+          <far>20</far>
+        </clip>
+      </camera>
+      <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
+        <alwaysOn>true</alwaysOn>
+        <updateRate>10.0</updateRate>
+        <cameraName>camera</cameraName>
+        <imageTopicName>/camera/image_raw</imageTopicName>
+        <cameraInfoTopicName>/camera/camera_info</cameraInfoTopicName>
+        <frameName>camera_optical_link</frameName>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       LIDAR SENSOR — maps to /scan
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <link name="laser">
+    <visual>
+      <geometry> <cylinder radius="0.04" length="0.05"/> </geometry>
+      <material name="red"/>
+    </visual>
+    <collision>
+      <geometry> <cylinder radius="0.04" length="0.05"/> </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.15"/>
+      <inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="laser"/>
+    <origin xyz="0.08 0 ${chassis_height/2 + 0.04}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Gazebo LiDAR plugin — publishes /scan -->
+  <gazebo reference="laser">
+    <sensor type="ray" name="lidar">
+      <pose>0 0 0 0 0 0</pose>
+      <visualize>true</visualize>
+      <update_rate>10</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.10</min>
+          <max>10.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </ray>
+      <plugin name="gazebo_ros_lidar" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <remapping>~/out:=/scan</remapping>
+        </ros>
+        <output_type>sensor_msgs/LaserScan</output_type>
+        <frame_name>laser</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       ULTRASONIC SENSOR FRAME
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <link name="ultrasonic_link">
+    <visual>
+      <geometry> <box size="0.02 0.04 0.02"/> </geometry>
+      <material name="grey"/>
+    </visual>
+    <inertial>
+      <mass value="0.01"/>
+      <inertia ixx="0.0001" iyy="0.0001" izz="0.0001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="ultrasonic_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="ultrasonic_link"/>
+    <origin xyz="${chassis_length/2} 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       DIFFERENTIAL DRIVE PLUGIN — publishes /odom, subscribes /cmd_vel
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <gazebo>
+    <plugin name="differential_drive" filename="libgazebo_ros_diff_drive.so">
+      <update_rate>30</update_rate>
+
+      <!-- Wheel joints -->
+      <left_joint>front_left_wheel_joint</left_joint>
+      <right_joint>front_right_wheel_joint</right_joint>
+
+      <!-- Kinematics -->
+      <wheel_separation>${wheel_separation}</wheel_separation>
+      <wheel_diameter>${2*wheel_radius}</wheel_diameter>
+
+      <!-- Limits -->
+      <max_wheel_torque>20</max_wheel_torque>
+      <max_wheel_acceleration>1.0</max_wheel_acceleration>
+
+      <!-- Topics -->
+      <command_topic>/cmd_vel</command_topic>
+      <odometry_topic>/odom</odometry_topic>
+      <odometry_frame>odom</odometry_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+
+      <!-- Publish TF -->
+      <publish_odom>true</publish_odom>
+      <publish_odom_tf>true</publish_odom_tf>
+      <publish_wheel_tf>false</publish_wheel_tf>
+    </plugin>
+  </gazebo>
+
+</robot>

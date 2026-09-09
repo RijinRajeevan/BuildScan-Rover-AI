@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>buildscan_hardware</name>
+  <version>1.0.0</version>
+  <description>
+    Hardware interface nodes for BuildScan Rover.
+    Runs on Raspberry Pi 4/5.
+    - camera_bridge_node: ESP32-CAM MJPEG stream → /camera/image_raw
+    - motor_interface_node: /cmd_vel safety relay + watchdog + SetMode service
+    - safety_node: HC-SR04 /ultrasonic_range watchdog → /emergency_stop
+  </description>
+  <maintainer email="buildscan@example.com">BuildScan Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>buildscan_interfaces</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
