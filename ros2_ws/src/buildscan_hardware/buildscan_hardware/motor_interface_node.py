@@ -52,7 +52,7 @@ class MotorInterfaceNode(Node):
     reach the embedded controller.
     """
 
-    VALID_MODES = {'MANUAL', 'AUTO', 'INSPECTION', 'PARK'}
+    VALID_MODES = {'MANUAL', 'AUTO (NOT IMPLEMENTED)', 'AUTO', 'INSPECTION', 'PARK'}
 
     def __init__(self):
         super().__init__('motor_interface_node')

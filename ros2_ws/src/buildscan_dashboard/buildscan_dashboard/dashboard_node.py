@@ -335,7 +335,7 @@ def main():
         st.divider()
         mode_col1, mode_col2 = st.columns(2)
         with mode_col1:
-            selected_mode = st.selectbox('Mode', ['MANUAL', 'AUTO', 'INSPECTION', 'PARK'])
+            selected_mode = st.selectbox('Mode', ['MANUAL', 'AUTO (NOT IMPLEMENTED)', 'INSPECTION', 'PARK'])
         with mode_col2:
             st.write('')
             st.write('')
