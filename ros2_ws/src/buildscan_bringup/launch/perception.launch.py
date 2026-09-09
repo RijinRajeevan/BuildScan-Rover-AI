@@ -37,20 +37,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     params_file  = LaunchConfiguration('params_file')
 
-    # ── Camera Bridge Node ─────────────────────────────────────────────────────
-    camera_bridge_node = Node(
-        package='buildscan_hardware',
-        executable='camera_bridge_node',
-        name='camera_bridge_node',
-        output='screen',
-        parameters=[
-            params_file,
-            {'use_sim_time': use_sim_time}
-        ],
-        remappings=[
-            ('/camera/image_raw', '/camera/image_raw'),
-        ]
-    )
+
 
     # ── Crack Detection Node ───────────────────────────────────────────────────
     crack_detection_node = Node(
@@ -72,6 +59,6 @@ def generate_launch_description():
     return LaunchDescription([
         use_sim_time_arg,
         params_file_arg,
-        camera_bridge_node,
+
         crack_detection_node,
     ])

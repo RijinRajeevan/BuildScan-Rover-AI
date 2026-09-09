@@ -30,9 +30,7 @@ def generate_launch_description():
 
     # ── Arguments ─────────────────────────────────────────────────────────────
     args = [
-        DeclareLaunchArgument('esp32_cam_url',
-            default_value='http://10.131.116.176:81/stream',
-            description='ESP32-CAM MJPEG stream URL'),
+
         DeclareLaunchArgument('esp32_serial_port',
             default_value='/dev/ttyUSB0',
             description='ESP32 DevKit serial port for micro-ROS'),
@@ -73,14 +71,16 @@ def generate_launch_description():
         parameters=[params_file],
     )
 
-    # ── Camera Bridge ─────────────────────────────────────────────────────────
-    camera_bridge = Node(
-        package='buildscan_hardware',
-        executable='camera_bridge_node',
-        name='camera_bridge_node',
+    # ── USB Camera (v4l2_camera) ──────────────────────────────────────────────
+    camera_node = Node(
+        package='v4l2_camera',
+        executable='v4l2_camera_node',
+        name='v4l2_camera_node',
         output='screen',
-        parameters=[params_file,
-                    {'esp32_cam_stream_url': LaunchConfiguration('esp32_cam_url')}],
+        parameters=[params_file],
+        remappings=[
+            ('/image_raw', '/camera/image_raw')
+        ]
     )
 
     # ── Crack Detection Node ───────────────────────────────────────────────────
@@ -115,8 +115,8 @@ def generate_launch_description():
             microros_agent,
             motor_interface,
             safety_node,
-            camera_bridge,
-            # delay perception 3 seconds to ensure camera bridge is ready
+            camera_node,
+            # delay perception 3 seconds to ensure camera is ready
             TimerAction(period=3.0, actions=[crack_detection]),
             TimerAction(period=4.0, actions=[inspection_manager]),
             robot_state_pub,

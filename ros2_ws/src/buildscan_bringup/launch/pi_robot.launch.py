@@ -27,9 +27,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
 
     args = [
-        DeclareLaunchArgument('esp32_cam_url',
-            default_value='http://10.131.116.176:81/stream',
-            description='ESP32-CAM MJPEG stream URL'),
+
         DeclareLaunchArgument('esp32_serial_port',
             default_value='/dev/ttyUSB0',
             description='ESP32 DevKit serial port for micro-ROS'),
