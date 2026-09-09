@@ -23,7 +23,6 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'camera_bridge_node = buildscan_hardware.camera_bridge_node:main',
             'motor_interface_node = buildscan_hardware.motor_interface_node:main',
             'safety_node = buildscan_hardware.safety_node:main',
         ],
