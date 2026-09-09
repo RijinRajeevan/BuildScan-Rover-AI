@@ -1,0 +1,16 @@
+# SetMode.srv
+# Switch rover operating mode
+# Usage: ros2 service call /set_mode buildscan_interfaces/srv/SetMode \
+#          "{mode: 'MANUAL'}"
+#
+# Valid modes:
+#   MANUAL      - Teleop via /cmd_vel
+#   AUTO        - Autonomous obstacle avoidance
+#   INSPECTION  - Structural inspection mission
+#   PARK        - Stopped/standby
+
+string mode
+---
+bool success
+string message
+string current_mode

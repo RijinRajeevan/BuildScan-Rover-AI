@@ -1,0 +1,11 @@
+# SetInspectionConfig.srv
+# Configure crack detection parameters at runtime
+# Usage: ros2 service call /set_inspection_config buildscan_interfaces/srv/SetInspectionConfig \
+#          "{confidence_threshold: 0.30, safety_distance: 0.30}"
+
+float32 confidence_threshold    # YOLO confidence threshold (0.0 - 1.0)
+float32 safety_distance         # Emergency stop distance in meters
+int32   inference_image_size    # YOLO inference image size (e.g. 320, 640)
+---
+bool success
+string message

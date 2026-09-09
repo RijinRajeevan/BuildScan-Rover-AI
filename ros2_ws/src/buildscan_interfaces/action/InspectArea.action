@@ -1,0 +1,40 @@
+# InspectArea.action
+# Long-running structural inspection mission action
+#
+# Usage:
+#   ros2 action send_goal /inspect_area buildscan_interfaces/action/InspectArea \
+#     "{area_name: 'Wall_A', confidence_threshold: 0.30}"
+#
+# The action server executes:
+#   1. Validate goal
+#   2. Navigate/position robot (if Nav2 available)
+#   3. Begin camera scanning
+#   4. Run YOLO inference
+#   5. Analyze cracks and calculate severity
+#   6. Generate PDF report
+#   7. Return results
+
+# ── GOAL ──────────────────────────────────────────────
+string area_name                    # Identifier for the area being inspected
+float32 confidence_threshold        # YOLO confidence threshold (default: 0.30)
+float32 target_x                    # Optional: Nav2 goal X position (0 = skip nav)
+float32 target_y                    # Optional: Nav2 goal Y position
+int32   scan_frames                 # Number of frames to capture (default: 10)
+---
+# ── RESULT ────────────────────────────────────────────
+bool    success
+int32   cracks_detected
+float32 average_confidence
+float32 max_width_px
+float32 total_length_px
+string  severity                    # NONE / LOW / MEDIUM / HIGH
+string  recommendation
+string  report_path                 # Full path to generated PDF
+string  annotated_image_path
+string  message
+---
+# ── FEEDBACK ──────────────────────────────────────────
+string  current_stage               # Human-readable stage name
+float32 progress                    # 0.0 - 100.0 percent
+int32   cracks_found_so_far
+string  status_detail
