@@ -1,0 +1,6 @@
+# Raspberry Pi Dependencies
+# The Pi relies heavily on ROS 2 system packages installed via apt (rosdep).
+# Only lightweight utility packages should go here. Do NOT install PyTorch/CUDA here.
+
+PyYAML==6.0.1
+psutil==5.9.8
