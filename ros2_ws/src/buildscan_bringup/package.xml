@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>buildscan_bringup</name>
+  <version>1.0.0</version>
+  <description>
+    Launch files and configuration parameters for the BuildScan Rover ROS2 system.
+    Provides physical, simulation, perception, navigation, and full-system launches.
+  </description>
+  <maintainer email="buildscan@example.com">BuildScan Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>buildscan_interfaces</exec_depend>
+  <exec_depend>buildscan_hardware</exec_depend>
+  <exec_depend>buildscan_perception</exec_depend>
+  <exec_depend>buildscan_inspection</exec_depend>
+  <exec_depend>buildscan_navigation</exec_depend>
+  <exec_depend>buildscan_sim</exec_depend>
+  <exec_depend>buildscan_description</exec_depend>
+  <exec_depend>buildscan_dashboard</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

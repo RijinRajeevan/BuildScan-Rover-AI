@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>buildscan_inspection</name>
+  <version>1.0.0</version>
+  <description>
+    BuildScan Rover inspection action server and PDF report generator.
+    Runs on the LAPTOP alongside crack_detection_node.
+    Implements InspectArea action with full workflow, result aggregation,
+    severity analysis, and ReportLab PDF generation.
+  </description>
+  <maintainer email="buildscan@example.com">BuildScan Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>buildscan_interfaces</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,89 @@
+# =============================================================================
+# BuildScan Rover - ROS 2 Parameter Configuration
+# =============================================================================
+# All important parameters are defined here.
+# Override per-deployment (physical vs simulation) using launch file arguments.
+# =============================================================================
+
+buildscan_rover:
+  ros__parameters:
+
+    # ── Robot Identity ─────────────────────────────────────────────────────
+    robot_name: "buildscan_rover"
+    robot_description: "BuildScan Rover AI Structural Health Inspection Robot"
+
+    # ── Distributed Architecture Settings ──────────────────────────────────
+    # Note: These values should be exported as environment variables on BOTH 
+    # the Raspberry Pi and Laptop before running nodes:
+    #   export ROS_DOMAIN_ID=25
+    #   export ROS_LOCALHOST_ONLY=0
+    # Optional: explicitly set network interfaces if discovering fails:
+    #   export ROS_IP=<current_machine_ip>
+    # ───────────────────────────────────────────────────────────────────────
+
+
+    # ── Velocity Limits (conservative defaults for safety) ─────────────────
+    max_linear_velocity:  0.30      # m/s  — conservative for indoor use
+    max_angular_velocity: 1.00      # rad/s
+    default_linear_velocity:  0.15  # m/s  — default inspection speed
+    default_angular_velocity: 0.50  # rad/s
+
+    # ── Safety ────────────────────────────────────────────────────────────
+    safety_distance:          0.30  # meters — emergency stop threshold (HC-SR04)
+    watchdog_timeout:         2.0   # seconds — communication loss timeout
+
+    # ── Camera (USB HD Camera) ────────────────────────────────────────────
+    camera_topic:             "/camera/image_raw"
+    video_device:             "/dev/video0"
+    image_width:              640
+    image_height:             480
+    camera_frame_id:          "camera_link"
+
+    # ── AI / YOLO ─────────────────────────────────────────────────────────
+    # IMPORTANT: On the Ubuntu laptop, this should be the absolute path to the weights file!
+    # Example: "/home/username/BuildScan/crack_detection/BuildScan_SegModel/weights/best.pt"
+    model_path:               "crack_detection/BuildScan_SegModel/weights/best.pt"
+    yolo_confidence_threshold: 0.30
+    yolo_inference_image_size: 320  # pixels (320 for real-time, 640 for accuracy)
+    yolo_model_name:           "YOLO26n-seg"
+    yolo_model_version:        "1.0.0"
+    ai_device:                 "cuda"  # "cuda" or "cpu"
+
+    # ── Severity Thresholds (pixel-width based, from original methodology) ─
+    severity_low_max_width:    70   # px — below this → LOW severity
+    severity_medium_max_width: 150  # px — below this → MEDIUM severity
+    # above 150px → HIGH severity
+
+    # ── Inspection ────────────────────────────────────────────────────────
+    inspection_timeout:        60.0  # seconds — max time per inspection
+    inspection_scan_frames:    10    # frames to capture for analysis
+    inspection_output_dir:     "/tmp/buildscan_reports"
+    inspection_topic:          "/inspection/result"
+    inspection_status_topic:   "/inspection/status"
+
+    # ── Navigation / Sensor Topics ────────────────────────────────────────
+    scan_topic:                "/scan"
+    odom_topic:                "/odom"
+    cmd_vel_topic:             "/cmd_vel"
+    emergency_stop_topic:      "/emergency_stop"
+    ultrasonic_topic:          "/ultrasonic_range"
+
+    # ── Hardware (ESP32 DevKit / micro-ROS) ────────────────────────────────
+    microros_agent_port:       8888
+    esp32_serial_port:         "/dev/ttyUSB0"
+    esp32_baud_rate:           115200
+
+    # ── Wheel / Odometry ──────────────────────────────────────────────────
+    wheel_radius:              0.033   # meters
+    wheel_separation:          0.160   # meters (track width)
+    encoder_ticks_per_rev:     20      # pulses per revolution (if available)
+    use_wheel_encoders:        false   # set true if encoders physically available
+
+    # ── LiDAR ─────────────────────────────────────────────────────────────
+    use_physical_lidar:        false   # set true if 2D LiDAR connected
+    lidar_frame_id:            "laser"
+    lidar_port:                "/dev/ttyUSB1"
+
+    # ── Simulation ────────────────────────────────────────────────────────
+    use_simulation:            false   # set true to use Gazebo sim sensors
+    use_sim_time:              false
