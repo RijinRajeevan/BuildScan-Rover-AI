@@ -41,8 +41,8 @@ buildscan_rover:
 
     # ── AI / YOLO ─────────────────────────────────────────────────────────
     # IMPORTANT: On the Ubuntu laptop, this should be the absolute path to the weights file!
-    # Example: "/home/username/BuildScan/crack_detection/BuildScan_SegModel/weights/best.pt"
-    model_path:               "crack_detection/BuildScan_SegModel/weights/best.pt"
+    # Example: "/home/username/BuildScan/models/yolo26n-seg.pt"
+    model_path:               "models/yolo26n-seg.pt"
     yolo_confidence_threshold: 0.30
     yolo_inference_image_size: 320  # pixels (320 for real-time, 640 for accuracy)
     yolo_model_name:           "YOLO26n-seg"
