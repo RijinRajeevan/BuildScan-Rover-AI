@@ -8,11 +8,7 @@ pandas==2.2.1
 matplotlib==3.8.2
 Pillow==10.2.0
 reportlab==4.1.0
-cvzone==1.6.1
-pyserial==3.5
 PyYAML==6.0.1
-scipy==1.11.4
 requests==2.31.0
 tqdm==4.66.1
-seaborn==0.13.2
 psutil==5.9.8
