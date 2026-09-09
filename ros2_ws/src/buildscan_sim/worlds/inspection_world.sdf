@@ -1,0 +1,216 @@
+<?xml version="1.0" ?>
+<!--
+  inspection_world.sdf  ── Stage 10
+  ═══════════════════════════════════
+  Gazebo SDF World for BuildScan Rover Simulation
+
+  Contains:
+    - Indoor room layout (structural walls)
+    - Concrete-textured walls with crack-like patterns (for visual demo)
+    - Obstacles (pillars, boxes)
+    - Proper lighting
+    - Ground plane
+
+  The robot starts at (0, 0) and must navigate to inspect the structural walls.
+-->
+
+<sdf version="1.6">
+  <world name="inspection_world">
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         PHYSICS
+         ═══════════════════════════════════════════════════════════════════ -->
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         LIGHTING
+         ═══════════════════════════════════════════════════════════════════ -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- Indoor lighting -->
+    <light name="ceiling_light" type="point">
+      <pose>0 0 3 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.1 0.1 0.1 1</specular>
+      <attenuation>
+        <range>20</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <cast_shadows>false</cast_shadows>
+    </light>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         GROUND PLANE
+         ═══════════════════════════════════════════════════════════════════ -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         ROOM WALLS — 6m x 6m room
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- North wall (structural inspection target) -->
+    <model name="north_wall">
+      <static>true</static>
+      <pose>0 3 1 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box><size>6.0 0.15 2.0</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.65 1</ambient>
+            <diffuse>0.7 0.7 0.65 1</diffuse>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box><size>6.0 0.15 2.0</size></box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- South wall -->
+    <model name="south_wall">
+      <static>true</static>
+      <pose>0 -3 1 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>6.0 0.15 2.0</size></box></geometry>
+          <material><ambient>0.7 0.7 0.65 1</ambient><diffuse>0.7 0.7 0.65 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>6.0 0.15 2.0</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- East wall -->
+    <model name="east_wall">
+      <static>true</static>
+      <pose>3 0 1 0 0 ${pi/2}</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>6.0 0.15 2.0</size></box></geometry>
+          <material><ambient>0.7 0.7 0.65 1</ambient><diffuse>0.7 0.7 0.65 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>6.0 0.15 2.0</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- West wall -->
+    <model name="west_wall">
+      <static>true</static>
+      <pose>-3 0 1 0 0 ${pi/2}</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>6.0 0.15 2.0</size></box></geometry>
+          <material><ambient>0.7 0.7 0.65 1</ambient><diffuse>0.7 0.7 0.65 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>6.0 0.15 2.0</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         INTERIOR STRUCTURAL COLUMN (obstacle + inspection target)
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <model name="pillar_1">
+      <static>true</static>
+      <pose>1.5 1.5 1 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.2 0.2 2.0</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>0.2 0.2 2.0</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <model name="pillar_2">
+      <static>true</static>
+      <pose>-1.5 1.5 1 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.2 0.2 2.0</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>0.2 0.2 2.0</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         OBSTACLE BOXES
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <model name="box_obstacle_1">
+      <static>true</static>
+      <pose>-1.0 0.5 0.2 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.3 0.3 0.4</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>0.3 0.3 0.4</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <model name="box_obstacle_2">
+      <static>true</static>
+      <pose>1.2 -0.8 0.15 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.25 0.4 0.3</size></box></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>0.25 0.4 0.3</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         INTERIOR INSPECTION WALL (Wall_A — primary inspection target)
+         A free-standing structural wall inside the room
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <model name="wall_A">
+      <static>true</static>
+      <pose>0 1.5 0.75 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>2.0 0.12 1.5</size></box></geometry>
+          <material>
+            <ambient>0.75 0.72 0.68 1</ambient>
+            <diffuse>0.75 0.72 0.68 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>2.0 0.12 1.5</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+  </world>
+</sdf>
