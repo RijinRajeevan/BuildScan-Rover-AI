@@ -71,8 +71,7 @@ class CrackDetectionNode(Node):
         super().__init__('crack_detection_node')
 
         # ── Parameters ────────────────────────────────────────────────────────
-        self.declare_parameter('model_path',
-            'crack_detection/BuildScan_SegModel/weights/best.pt')
+        self.declare_parameter('model_path', 'models/yolo26n-seg.pt')
         self.declare_parameter('yolo_confidence_threshold', 0.30)
         self.declare_parameter('yolo_inference_image_size', 320)
         self.declare_parameter('ai_device', 'cpu')
