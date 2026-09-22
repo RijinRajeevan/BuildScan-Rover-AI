@@ -146,22 +146,30 @@ class InspectionManagerNode(Node):
         # ─────────────────────────────────────────────────────────────────────
         # STEP 1 — Navigation / Positioning (20%)
         # ─────────────────────────────────────────────────────────────────────
-        feedback.current_stage  = 'Navigation - Positioning robot'
+        feedback.current_stage  = 'Phase A: Manual positioning — Autonomous Nav2 navigation not yet available'
         feedback.progress       = 10.0
         feedback.cracks_found_so_far = 0
-        feedback.status_detail  = 'Moving to inspection position...'
+        feedback.status_detail  = 'PHASE A: Position the rover manually at the inspection area, then allow scan to proceed.'
         goal_handle.publish_feedback(feedback)
-        self._publish_status(f'NAV|Positioning for {goal.area_name}')
+        self._publish_status(f'NAV|Manual positioning required for {goal.area_name} (Phase A)')
 
         if goal_handle.is_cancel_requested:
             goal_handle.canceled()
             return self._make_cancelled_result(result)
 
-        # Simulate navigation time (replace with actual Nav2 action call)
-        # In physical deployment, this would call nav2 navigate_to_pose action
+        # ── PHASE A: Navigation is MANUAL. No Nav2/LiDAR connected yet.
+        # ── PHASE C: Replace this sleep with an actual Nav2 NavigateToPose action call:
+        #
+        #   nav_goal = NavigateToPose.Goal()
+        #   nav_goal.pose.pose.position.x = goal.target_x
+        #   nav_goal.pose.pose.position.y = goal.target_y
+        #   await nav_client.send_goal_async(nav_goal)
+        #
+        # For Phase A demonstration, the rover must be manually placed at the target.
+        # We pause briefly so the operator can confirm readiness.
         await self._sleep_with_cancel_check(goal_handle, 1.5)
 
-        feedback.current_stage = 'Navigation - Complete'
+        feedback.current_stage = 'Phase A: Manual positioning — Ready to scan'
         feedback.progress = 20.0
         goal_handle.publish_feedback(feedback)
 

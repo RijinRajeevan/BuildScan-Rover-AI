@@ -232,8 +232,8 @@ class ReportGenerator:
         c.setFont('Helvetica', 11)
         conf = data.average_confidence
         c.drawString(30,  perf_y - 20, f'Detection Confidence  :  {conf:.2f}%')
-        c.drawString(30,  perf_y - 36, f'Model Precision       :  {max(0, conf - 1.0):.2f}%  (estimated)')
-        c.drawString(30,  perf_y - 52, f'Model Recall          :  {max(0, conf - 2.0):.2f}%  (estimated)')
+        c.drawString(30,  perf_y - 36, f'Measurements          :  Pixel-based (not physically calibrated)')
+        c.drawString(30,  perf_y - 52, f'Max Crack Width       :  {data.maximum_width:.0f} px  |  Total Length: {data.total_length:.0f} px')
 
         # ── Footer ────────────────────────────────────────────────────────────
         c.setStrokeColor(self.COLOR_ACCENT)
