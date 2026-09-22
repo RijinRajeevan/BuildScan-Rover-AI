@@ -47,7 +47,9 @@ buildscan_rover:
     yolo_inference_image_size: 320  # pixels (320 for real-time, 640 for accuracy)
     yolo_model_name:           "YOLO26n-seg"
     yolo_model_version:        "1.0.0"
-    ai_device:                 "cuda"  # "cuda" or "cpu"
+    # IMPORTANT: Change to "cuda" only if your LAPTOP has an NVIDIA GPU with CUDA installed.
+    # Leaving as "cpu" guarantees the system runs on any laptop.
+    ai_device:                 "cpu"  # "cuda" or "cpu"
 
     # ── Severity Thresholds (pixel-width based, from original methodology) ─
     severity_low_max_width:    70   # px — below this → LOW severity
