@@ -12,9 +12,6 @@ Two modes (auto-detected at startup):
   • ROS2 mode    – rclpy available and ROS2 is sourced:
                    reuses DashboardBridgeNode from dashboard_node.py
                    reads /camera/image_annotated + /inspection/result
-  • Standalone   – rclpy not available (laptop without ROS2 sourced):
-                   opens USB camera directly with OpenCV VideoCapture,
-                   runs YOLO26n-seg locally, produces identical output
 
 Severity thresholds (mirror crack_detection_node.py defaults):
     LOW    : maximum_width  <  70 px   → "Apply surface filler and sealant"
@@ -56,23 +53,15 @@ import streamlit as st
 from PIL import Image as PILImage
 
 # ─────────────────────────────────────────────────────────────────────────────
-# YOLO
-# ─────────────────────────────────────────────────────────────────────────────
-try:
-    from ultralytics import YOLO
-    YOLO_AVAILABLE = True
-except Exception:
-    YOLO_AVAILABLE = False
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ROS2 (optional — graceful fallback to standalone mode)
+# ROS2 (required - source /opt/ros/humble/setup.bash before running)
 # ─────────────────────────────────────────────────────────────────────────────
 try:
     import rclpy
     from buildscan_dashboard.dashboard_node import DashboardBridgeNode
     ROS2_AVAILABLE = True
-except Exception:
+except Exception as e:
     ROS2_AVAILABLE = False
+    _ROS2_ERROR = str(e)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REPORT GENERATOR (optional import — falls back to inline PDF)
@@ -163,119 +152,6 @@ def classify_severity(max_width_px: float, crack_count: int):
     return "HIGH", REPAIR_HIGH
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# STANDALONE INFERENCE ENGINE
-# ═════════════════════════════════════════════════════════════════════════════
-
-class StandaloneEngine:
-    """
-    Opens USB camera directly and runs YOLO26n-seg locally.
-    Used when ROS2 is not available.
-
-    The analyze() method preserves the exact crack-measurement methodology
-    from crack_detection_node._analyze():
-      • total_length = sum of max(w, h) per bounding box
-      • maximum_width = max of min(w, h) across boxes
-      • confidence = max confidence × 100 (percentage)
-    """
-
-    def __init__(self):
-        self.model: Optional[object] = None
-        self._load_model()
-
-    def _load_model(self):
-        if not YOLO_AVAILABLE:
-            return
-        paths = [
-            str(_MODEL_PATH),
-            str(Path.cwd() / "models" / "yolo26n-seg.pt"),
-            "models/yolo26n-seg.pt",
-            "yolo26n-seg.pt",
-        ]
-        for p in paths:
-            if os.path.exists(p):
-                try:
-                    self.model = YOLO(p)
-                    return
-                except Exception:
-                    continue
-
-    def analyze(self, frame: np.ndarray) -> DetectionSnapshot:
-        """Run YOLO on frame, return DetectionSnapshot."""
-        snap = DetectionSnapshot(
-            original_frame=frame.copy(),
-            timestamp=datetime.datetime.now(),
-        )
-
-        if self.model is None:
-            snap.annotated_frame = frame.copy()
-            return snap
-
-        results = self.model.predict(
-            frame,
-            imgsz=320,
-            conf=0.30,
-            verbose=False,
-            device="cpu",
-        )
-        r = results[0]
-        snap.annotated_frame = r.plot()   # bbox + label baked in
-
-        if r.boxes is not None and len(r.boxes) > 0:
-            snap.cracks_detected = len(r.boxes)
-            snap.average_confidence = float(r.boxes.conf.max()) * 100.0
-
-            length = 0
-            width  = 0
-            for box in r.boxes.xyxy.cpu().numpy():
-                x1, y1, x2, y2 = box[:4]
-                w = int(x2 - x1)
-                h = int(y2 - y1)
-                length += max(w, h)
-                if min(w, h) > width:
-                    width = min(w, h)
-
-            snap.total_length   = float(length)
-            snap.maximum_width  = float(width)
-
-        sev, rec = classify_severity(snap.maximum_width, snap.cracks_detected)
-        snap.severity       = sev
-        snap.recommendation = rec
-        return snap
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# STREAMING THREAD — writes into st.session_state, never blocks main thread
-# ═════════════════════════════════════════════════════════════════════════════
-
-def _standalone_stream_loop(stop_event: threading.Event):
-    """
-    Standalone mode streaming loop.
-    Opens USB camera, runs YOLO per frame, pushes DetectionSnapshot to
-    session_state. Exits cleanly when stop_event is set.
-    """
-    engine = StandaloneEngine()
-    cap    = cv2.VideoCapture(_CAM_IDX)
-
-    if not cap.isOpened():
-        st.session_state["stream_error"] = (
-            f"Could not open camera at index {_CAM_IDX}. "
-            f"Try setting the BUILDSCAN_CAM_IDX environment variable."
-        )
-        return
-
-    st.session_state["stream_error"] = None
-
-    while not stop_event.is_set():
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.05)
-            continue
-
-        snap = engine.analyze(frame)
-        st.session_state["snapshot"] = snap
-
-    cap.release()
 
 
 def _ros2_stream_loop(stop_event: threading.Event):
@@ -336,7 +212,7 @@ def start_stream():
     st.session_state["streaming"]  = True
     st.session_state["snapshot"]   = DetectionSnapshot()
 
-    target = _ros2_stream_loop if ROS2_AVAILABLE else _standalone_stream_loop
+    target = _ros2_stream_loop
     t = threading.Thread(target=target, args=(stop_event,), daemon=True)
     t.start()
     st.session_state["stream_thread"] = t
@@ -717,6 +593,22 @@ def main():
     # ── Inject CSS ────────────────────────────────────────────────────────────
     st.markdown(_CSS, unsafe_allow_html=True)
 
+    # ── ROS2 availability check ───────────────────────────────────────────────
+    if not ROS2_AVAILABLE:
+        st.error(
+            f"❌ ROS 2 is not available. Cannot start dashboard.\n\n"
+            f"Error: {_ROS2_ERROR}\n\n"
+            "**To fix:** Source your ROS 2 environment before running Streamlit:\n"
+            "```bash\n"
+            "source /opt/ros/humble/setup.bash\n"
+            "source ~/ros2_ws/install/setup.bash\n"
+            "export ROS_DOMAIN_ID=25\n"
+            "export ROS_LOCALHOST_ONLY=0\n"
+            "python -m streamlit run dashboard.py\n"
+            "```"
+        )
+        return
+
     # ── Session state defaults ────────────────────────────────────────────────
     st.session_state.setdefault("streaming",     False)
     st.session_state.setdefault("snapshot",      DetectionSnapshot())
@@ -729,15 +621,15 @@ def main():
     # ─────────────────────────────────────────────────────────────────────────
     # HEADER ROW
     # ─────────────────────────────────────────────────────────────────────────
-    mode_label = "ROS2 Mode" if ROS2_AVAILABLE else "Standalone Mode"
-    mode_cls   = "bs-mode-ros2" if ROS2_AVAILABLE else "bs-mode-standalone"
+    mode_label = "ROS2 Mode"
+    mode_cls   = "bs-mode-ros2"
 
     st.markdown(f"""
     <div class="bs-header">
       <div class="bs-header-icon">🏗️</div>
       <div>
         <p class="bs-header-title">BuildScan Rover AI Dashboard</p>
-        <p class="bs-header-sub">AI-Assisted Structural Crack Detection  •  YOLOv8 Segmentation</p>
+        <p class="bs-header-sub">AI-Assisted Structural Crack Detection  •  YOLO26n-seg</p>
       </div>
       <span class="bs-mode-badge {mode_cls}">{mode_label}</span>
     </div>
@@ -752,7 +644,7 @@ def main():
             f'<div class="bs-status error">⚠ {err}</div>',
             unsafe_allow_html=True)
     elif st.session_state["streaming"]:
-        src = "ROS2 topics" if ROS2_AVAILABLE else f"USB camera (index {_CAM_IDX})"
+        src = "ROS2 topics"
         st.markdown(
             f'<div class="bs-status">● Streaming live from {src}</div>',
             unsafe_allow_html=True)
