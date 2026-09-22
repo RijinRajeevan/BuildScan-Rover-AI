@@ -55,6 +55,8 @@
 #define IN4 32
 
 // HC-SR04 Ultrasonic Sensor
+// WARNING: HC-SR04 ECHO pin outputs 5V. ESP32 GPIOs are 3.3V tolerant only.
+// You MUST use a voltage divider or logic-level converter between ECHO and GPIO 18.
 #define TRIG_PIN 5
 #define ECHO_PIN 18
 
