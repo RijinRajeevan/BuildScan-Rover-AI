@@ -5,10 +5,10 @@
   <version>1.0.0</version>
   <description>
     Hardware interface nodes for BuildScan Rover.
-    Runs on Raspberry Pi 4/5.
-    - camera_bridge_node: ESP32-CAM MJPEG stream → /camera/image_raw
+    Runs on Raspberry Pi 4.
     - motor_interface_node: /cmd_vel safety relay + watchdog + SetMode service
-    - safety_node: HC-SR04 /ultrasonic_range watchdog → /emergency_stop
+    - safety_node: HC-SR04 /ultrasonic_range watchdog -> /emergency_stop
+    Camera is provided by v4l2_camera (standard ROS 2 package).
   </description>
   <maintainer email="buildscan@example.com">BuildScan Team</maintainer>
   <license>MIT</license>
@@ -20,7 +20,6 @@
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
-  <depend>cv_bridge</depend>
   <depend>buildscan_interfaces</depend>
 
   <test_depend>ament_copyright</test_depend>

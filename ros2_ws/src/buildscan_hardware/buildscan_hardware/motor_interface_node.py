@@ -52,7 +52,9 @@ class MotorInterfaceNode(Node):
     reach the embedded controller.
     """
 
-    VALID_MODES = {'MANUAL', 'AUTO (NOT IMPLEMENTED)', 'AUTO', 'INSPECTION', 'PARK'}
+    # AUTO mode is not implemented (no Nav2/odometry). Accepting the string
+    # to avoid service errors but the rover will not autonomously navigate.
+    VALID_MODES = {'MANUAL', 'AUTO (NOT IMPLEMENTED)', 'INSPECTION', 'PARK'}
 
     def __init__(self):
         super().__init__('motor_interface_node')
