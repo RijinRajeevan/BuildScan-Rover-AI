@@ -8,7 +8,7 @@ Includes:
   - micro-ROS Agent (bridge to ESP32)
   - motor_interface_node
   - safety_node
-  - camera_bridge_node
+  - v4l2_camera_node
   - robot_state_publisher
 
 Usage:
@@ -31,6 +31,9 @@ def generate_launch_description():
         DeclareLaunchArgument('esp32_serial_port',
             default_value='/dev/ttyUSB0',
             description='ESP32 DevKit serial port for micro-ROS'),
+        DeclareLaunchArgument('camera_device',
+            default_value='/dev/video0',
+            description='USB camera device node'),
         DeclareLaunchArgument('params_file',
             default_value=PathJoinSubstitution([
                 FindPackageShare('buildscan_bringup'),
@@ -69,14 +72,21 @@ def generate_launch_description():
     )
 
     # USB Camera (v4l2_camera)
+    # HARDWARE DEPENDENT: requires USB camera at camera_device (/dev/video0 by default)
     camera_node = Node(
         package='v4l2_camera',
         executable='v4l2_camera_node',
         name='v4l2_camera_node',
         output='screen',
-        parameters=[params_file],
-        # Optionally remap if you want the image topic to specifically match
-        # but standard v4l2_camera outputs /image_raw, so we remap to /camera/image_raw
+        parameters=[
+            params_file,
+            {
+                'video_device':  LaunchConfiguration('camera_device'),
+                'image_width':   640,
+                'image_height':  480,
+                'image_format':  'MJPG',
+            }
+        ],
         remappings=[
             ('/image_raw', '/camera/image_raw')
         ]
