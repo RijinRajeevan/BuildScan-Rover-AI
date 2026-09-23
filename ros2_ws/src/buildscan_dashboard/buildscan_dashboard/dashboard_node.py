@@ -45,7 +45,7 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 
 from sensor_msgs.msg import Image
-from std_msgs.msg import String, Bool
+from std_msgs.msg import String, Bool, Float32
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
 
@@ -72,11 +72,12 @@ class DashboardBridgeNode(Node):
         cb = ReentrantCallbackGroup()
 
         # ── Shared state (thread-safe via Python GIL for simple types) ────────
-        self.latest_frame      = None   # numpy BGR image from /camera/image_raw
-        self.latest_annotated  = None   # numpy BGR image from /camera/image_annotated
-        self.latest_result     = None   # InspectionResult message
-        self.status_text       = ''
-        self.emergency_stop    = False
+        self.latest_frame        = None   # numpy BGR image from /camera/image_raw
+        self.latest_annotated    = None   # numpy BGR image from /camera/image_annotated
+        self.latest_result       = None   # InspectionResult message
+        self.status_text         = ''
+        self.emergency_stop      = False
+        self.commanded_tilt_angle = 90.0  # degrees — last commanded servo angle (no feedback)
 
         self.bridge = CvBridge()
 
@@ -93,7 +94,11 @@ class DashboardBridgeNode(Node):
             self._estop_callback, 10, callback_group=cb)
 
         # ── Publishers ────────────────────────────────────────────────────────
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.cmd_vel_pub   = self.create_publisher(Twist,   '/cmd_vel',          10)
+        # /camera_tilt_cmd: Float32 value = desired servo angle in degrees.
+        # The ESP32 firmware clamps incoming values to [SERVO_MIN, SERVO_MAX].
+        # There is NO angle feedback sensor — commanded angle is displayed only.
+        self.tilt_pub      = self.create_publisher(Float32, '/camera_tilt_cmd',  10)
 
         # ── Action Client ─────────────────────────────────────────────────────
         self.inspect_client = ActionClient(
@@ -140,6 +145,22 @@ class DashboardBridgeNode(Node):
 
     def send_stop(self):
         self.cmd_vel_pub.publish(Twist())
+
+    def send_tilt(self, angle_deg: float):
+        """Publish camera tilt angle command to /camera_tilt_cmd.
+
+        Args:
+            angle_deg: Desired servo angle in degrees.
+                       Safe range is determined by firmware constants
+                       SERVO_MIN_ANGLE and SERVO_MAX_ANGLE (default 45–135°).
+                       Out-of-range values are clamped by the ESP32 firmware.
+        Note: This is open-loop — no servo angle feedback exists.
+              Displayed angle is commanded angle, not measured angle.
+        """
+        self.commanded_tilt_angle = float(angle_deg)
+        msg = Float32()
+        msg.data = self.commanded_tilt_angle
+        self.tilt_pub.publish(msg)
 
     def send_inspect_goal(self, area_name: str, confidence: float = 0.30,
                            frames: int = 10) -> None:
@@ -341,6 +362,56 @@ def main():
             st.write('')
             if st.button('Set Mode'):
                 node.set_mode(selected_mode)
+
+        # ── Camera Tilt Control ───────────────────────────────────────────────
+        st.divider()
+        st.subheader('📷 Camera Tilt Control')
+        st.caption(
+            'Publishes to /camera_tilt_cmd (std_msgs/Float32 — degrees).  '
+            'Servo clamped to [45°–135°] by ESP32 firmware.  '
+            '⚠ Commanded angle only — no feedback sensor on hardware.'
+        )
+
+        tilt_col1, tilt_col2 = st.columns([3, 2])
+
+        with tilt_col1:
+            tilt_angle = st.slider(
+                'Tilt Angle (°)',
+                min_value=45,
+                max_value=135,
+                value=int(node.commanded_tilt_angle),
+                step=5,
+                key='tilt_slider',
+                help='Safe range: 45° (down) to 135° (up). 90° = neutral/center.'
+            )
+
+        with tilt_col2:
+            st.write('')
+            st.write('')
+            tc1, tc2, tc3 = st.columns(3)
+            with tc1:
+                if st.button('⬆ Up', key='tilt_up', use_container_width=True):
+                    node.send_tilt(max(45, node.commanded_tilt_angle - 10))
+                    st.rerun()
+            with tc2:
+                if st.button('●', key='tilt_center', use_container_width=True,
+                             help='Center (90°)'):
+                    node.send_tilt(90.0)
+                    st.rerun()
+            with tc3:
+                if st.button('⬇ Dn', key='tilt_down', use_container_width=True):
+                    node.send_tilt(min(135, node.commanded_tilt_angle + 10))
+                    st.rerun()
+
+        if st.button('Send Tilt', key='btn_send_tilt', type='primary'):
+            node.send_tilt(float(tilt_angle))
+            st.success(f'Camera tilt command sent: {tilt_angle}°  '
+                       f'(topic: /camera_tilt_cmd)')
+
+        st.info(
+            f'Last commanded angle: **{node.commanded_tilt_angle:.0f}°**  '
+            f'(open-loop — ESP32 servo, no angle sensor)'
+        )
 
     # ── TAB 4: Settings ───────────────────────────────────────────────────────
     with tab4:
