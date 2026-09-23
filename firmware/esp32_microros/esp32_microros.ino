@@ -219,9 +219,18 @@ void error_loop() {
 // MOTOR CONTROL
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Helper to abstract PWM write across ESP32 Arduino Core 2.x and 3.x
+static inline void set_pwm(uint8_t pin, uint8_t channel, uint32_t duty) {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  ledcWrite(pin, duty);
+#else
+  ledcWrite(channel, duty);
+#endif
+}
+
 void motor_stop() {
-  ledcWrite(PWM_CHANNEL_A, 0);
-  ledcWrite(PWM_CHANNEL_B, 0);
+  set_pwm(ENA, PWM_CHANNEL_A, 0);
+  set_pwm(ENB, PWM_CHANNEL_B, 0);
   digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
 }
@@ -262,8 +271,8 @@ void motor_drive(float linear_x, float angular_z) {
     digitalWrite(IN3, LOW);  digitalWrite(IN4, LOW);
   }
 
-  ledcWrite(PWM_CHANNEL_A, left_pwm);
-  ledcWrite(PWM_CHANNEL_B, right_pwm);
+  set_pwm(ENA, PWM_CHANNEL_A, left_pwm);
+  set_pwm(ENB, PWM_CHANNEL_B, right_pwm);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -407,14 +416,19 @@ void setup() {
   pinMode(ECHO_PIN, INPUT);
   pinMode(LED_BUILTIN, OUTPUT);
 
-  // Ensure motors are stopped on boot before anything else runs
-  motor_stop();
-
   // ── PWM for motor speed ───────────────────────────────────────────────────
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  ledcAttach(ENA, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(ENB, PWM_FREQ, PWM_RESOLUTION);
+#else
   ledcSetup(PWM_CHANNEL_A, PWM_FREQ, PWM_RESOLUTION);
   ledcSetup(PWM_CHANNEL_B, PWM_FREQ, PWM_RESOLUTION);
   ledcAttachPin(ENA, PWM_CHANNEL_A);
   ledcAttachPin(ENB, PWM_CHANNEL_B);
+#endif
+
+  // Ensure motors are stopped on boot before anything else runs
+  motor_stop();
 
   // ── Camera Servo Init ────────────────────────────────────────────────────
   // Attach servo and move to safe neutral position on boot.
@@ -435,7 +449,7 @@ void setup() {
 
   // ── Serial for micro-ROS agent ────────────────────────────────────────────
   Serial.begin(115200);
-  set_microros_serial_transports(Serial);
+  set_microros_transports();
   delay(2000);  // Wait for micro-ROS agent connection
 
   // ── micro-ROS Init ────────────────────────────────────────────────────────
