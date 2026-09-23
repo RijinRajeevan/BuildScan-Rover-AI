@@ -81,6 +81,40 @@ buildscan_rover:
     encoder_ticks_per_rev:     20      # pulses per revolution (if available)
     use_wheel_encoders:        false   # set true if encoders physically available
 
+    # ── Camera Servo (MG996R/MG995-class, controlled by ESP32) ───────────
+    # These values are the SINGLE SOURCE OF TRUTH for servo configuration.
+    # After tuning, mirror the values into the firmware constants:
+    #   SERVO_MIN_ANGLE, SERVO_MAX_ANGLE, SERVO_DEFAULT_ANGLE in esp32_microros.ino
+    #
+    # CALIBRATION PROCEDURE:
+    #   1. Flash firmware with SERVO_DEFAULT_ANGLE = 90 (neutral).
+    #   2. Power servo from external 5-6V supply (NOT ESP32 3.3V).
+    #   3. Publish:  ros2 topic pub /camera_tilt_cmd std_msgs/msg/Float32 "data: 90.0"
+    #   4. Observe physical camera stand — confirm 90° is mechanical center.
+    #   5. Test 45° (down): ros2 topic pub /camera_tilt_cmd std_msgs/msg/Float32 "data: 45.0"
+    #   6. Test 135° (up): ros2 topic pub /camera_tilt_cmd std_msgs/msg/Float32 "data: 135.0"
+    #   7. Adjust SERVO_MIN_ANGLE / SERVO_MAX_ANGLE if the stand binds or hits hard stops.
+    #
+    # POWER WARNING: Servo requires external 5-6V supply with >= 1A capacity.
+    # Common ground between external supply GND and ESP32 GND is mandatory.
+    camera_servo_pin:          13      # ESP32 GPIO for servo signal (PWM)
+    camera_tilt_min:           45     # degrees — minimum safe downward angle
+    camera_tilt_max:           135    # degrees — maximum safe upward angle
+    camera_tilt_default:       90     # degrees — neutral / boot position
+    # camera_tilt_speed is not currently exposed (ESP32Servo write() is position-only)
+
+    # ── LCD (16x2 I2C, PCF8574 backpack, controlled by ESP32) ───────────
+    # Hardware: SDA=GPIO21, SCL=GPIO22 (routed via 4-channel level shifter)
+    # Level shifter allocation:
+    #   CH1: HC-SR04 ECHO (5V) → ESP32 GPIO18 (3.3V)
+    #   CH2: LCD SDA (5V pullup) → ESP32 GPIO21 (3.3V)
+    #   CH3: LCD SCL (5V pullup) → ESP32 GPIO22 (3.3V)
+    #   CH4: (spare/future use)
+    # I2C address: 0x27 (common PCF8574). If LCD not found, try 0x3F.
+    # ASSUMPTION: PCF8574-based backpack powered from 5V rail.
+    # Verify your backpack model before powering up without level shifting.
+    lcd_i2c_address:           "0x27"  # documentation only — set in firmware
+
     # ── LiDAR ─────────────────────────────────────────────────────────────
     use_physical_lidar:        false   # set true if 2D LiDAR connected
     lidar_frame_id:            "laser"
