@@ -1,193 +1,236 @@
-﻿/**
+/**
  * motor_diagnostic.ino
- * ════════════════════════════════════════════════════════════════════════════
- * BUILDScan Rover — TEMPORARY Motor Hardware Diagnostic
- * ════════════════════════════════════════════════════════════════════════════
- *
- * PURPOSE  : Standalone motor test. Flash temporarily to verify all four DC
- *            geared motors and the HW-095/L298N driver work correctly.
- *            Restore esp32_microros.ino when done.
- *
- * HARDWARE : ESP32 DevKit V1 + HW-095 / L298N dual H-bridge
- *            4WD chassis - two motors per side, wired in parallel per channel.
- *
- * EXCLUDED : No ROS 2, micro-ROS, Wi-Fi, Bluetooth, servo, LCD, PCA9685,
- *            ultrasonic sensor. Pure motor + serial only.
- *
- * GPIO MAP (identical to esp32_microros.ino - do NOT rewire):
- *   LEFT SIDE  : ENA = GPIO 14   IN1 = GPIO 26   IN2 = GPIO 25
- *   RIGHT SIDE : ENB = GPIO 27   IN1 = GPIO 33   IN2 = GPIO 32
- *
- * SERIAL COMMANDS (115200 baud):
- *   F = Forward       B = Backward
- *   L = Turn Left     R = Turn Right
- *   S = Stop
- *
- * PWM API : ESP32 Arduino Core 3.x -> ledcAttach() / ledcWrite()
- *           NOT using deprecated ledcSetup() / ledcAttachPin()
- *
- * SAFETY  : Motors start STOPPED. PWM = 80/255 (~31%) for controlled test.
- * ════════════════════════════════════════════════════════════════════════════
+ * ============================================================================
+ * BUILDScan Rover — Standalone Motor Hardware Diagnostic
+ * ============================================================================
+ * 
+ * AUTOMATIC CYCLING + INTERACTIVE SERIAL CONTROL
+ * 
+ * Works whether:
+ *  1) ENA/ENB have jumper caps attached (full 5V)
+ *  2) ENA/ENB are wired to GPIO 14 & GPIO 27 (driven with PWM / HIGH)
+ * 
+ * WIRING:
+ *   LEFT SIDE  : ENA -> GPIO 14, IN1 -> GPIO 26, IN2 -> GPIO 25
+ *   RIGHT SIDE : ENB -> GPIO 27, IN3 -> GPIO 33, IN4 -> GPIO 32
+ *   COMMON GND : ESP32 GND -> L298N GND (MANDATORY)
+ *   POWER      : Battery (+) -> L298N 12V, Battery (-) -> L298N GND
+ * ============================================================================
  */
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  PIN DEFINITIONS  (mirrors esp32_microros.ino - do NOT change)
-// ─────────────────────────────────────────────────────────────────────────────
-#define LEFT_PWM   14   // ENA  - left  channel enable / speed
-#define LEFT_IN1   26   // IN1  - left  direction bit A
-#define LEFT_IN2   25   // IN2  - left  direction bit B
+#include <Arduino.h>
 
-#define RIGHT_PWM  27   // ENB  - right channel enable / speed
-#define RIGHT_IN1  33   // IN3  - right direction bit A
-#define RIGHT_IN2  32   // IN4  - right direction bit B
+// Pin definitions
+#define LEFT_PWM   14   // ENA
+#define LEFT_IN1   26   // IN1
+#define LEFT_IN2   25   // IN2
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  PWM CONFIGURATION  (ESP32 Core 3.x ledcAttach API)
-// ─────────────────────────────────────────────────────────────────────────────
-#define PWM_FREQ_HZ    1000   // 1 kHz - well within L298N spec
-#define PWM_RESOLUTION 8      // 8-bit -> duty range 0-255
-#define MOTOR_SPEED    80     // 80/255 ~31% - conservative starting speed
+#define RIGHT_PWM  27   // ENB
+#define RIGHT_IN1  33   // IN3
+#define RIGHT_IN2  32   // IN4
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  MOTOR PRIMITIVES
-// ─────────────────────────────────────────────────────────────────────────────
+// PWM parameters
+#define PWM_FREQ_HZ    1000
+#define PWM_RESOLUTION 8
+// Increased speed to 200/255 (~78%) to ensure gearboxes have enough torque to spin
+#define MOTOR_SPEED    200
+
+bool autoMode = true;
+unsigned long lastStepTime = 0;
+int autoStep = 0;
+
+void setSpeed(uint32_t speed) {
+    ledcWrite(LEFT_PWM, speed);
+    ledcWrite(RIGHT_PWM, speed);
+}
 
 void motorsStop() {
-    ledcWrite(LEFT_PWM,  0);
-    ledcWrite(RIGHT_PWM, 0);
-    digitalWrite(LEFT_IN1,  LOW);
-    digitalWrite(LEFT_IN2,  LOW);
+    setSpeed(0);
+    digitalWrite(LEFT_IN1, LOW);
+    digitalWrite(LEFT_IN2, LOW);
     digitalWrite(RIGHT_IN1, LOW);
     digitalWrite(RIGHT_IN2, LOW);
 }
 
 void motorsForward() {
-    digitalWrite(LEFT_IN1,  HIGH); digitalWrite(LEFT_IN2,  LOW);
-    digitalWrite(RIGHT_IN1, HIGH); digitalWrite(RIGHT_IN2, LOW);
-    ledcWrite(LEFT_PWM,  MOTOR_SPEED);
-    ledcWrite(RIGHT_PWM, MOTOR_SPEED);
+    digitalWrite(LEFT_IN1, HIGH);
+    digitalWrite(LEFT_IN2, LOW);
+    digitalWrite(RIGHT_IN1, HIGH);
+    digitalWrite(RIGHT_IN2, LOW);
+    setSpeed(MOTOR_SPEED);
 }
 
 void motorsBackward() {
-    digitalWrite(LEFT_IN1,  LOW);  digitalWrite(LEFT_IN2,  HIGH);
-    digitalWrite(RIGHT_IN1, LOW);  digitalWrite(RIGHT_IN2, HIGH);
-    ledcWrite(LEFT_PWM,  MOTOR_SPEED);
-    ledcWrite(RIGHT_PWM, MOTOR_SPEED);
+    digitalWrite(LEFT_IN1, LOW);
+    digitalWrite(LEFT_IN2, HIGH);
+    digitalWrite(RIGHT_IN1, LOW);
+    digitalWrite(RIGHT_IN2, HIGH);
+    setSpeed(MOTOR_SPEED);
 }
 
 void motorsTurnLeft() {
-    digitalWrite(LEFT_IN1,  LOW);  digitalWrite(LEFT_IN2,  HIGH);
-    digitalWrite(RIGHT_IN1, HIGH); digitalWrite(RIGHT_IN2, LOW);
-    ledcWrite(LEFT_PWM,  MOTOR_SPEED);
-    ledcWrite(RIGHT_PWM, MOTOR_SPEED);
+    digitalWrite(LEFT_IN1, LOW);
+    digitalWrite(LEFT_IN2, HIGH);
+    digitalWrite(RIGHT_IN1, HIGH);
+    digitalWrite(RIGHT_IN2, LOW);
+    setSpeed(MOTOR_SPEED);
 }
 
 void motorsTurnRight() {
-    digitalWrite(LEFT_IN1,  HIGH); digitalWrite(LEFT_IN2,  LOW);
-    digitalWrite(RIGHT_IN1, LOW);  digitalWrite(RIGHT_IN2, HIGH);
-    ledcWrite(LEFT_PWM,  MOTOR_SPEED);
-    ledcWrite(RIGHT_PWM, MOTOR_SPEED);
+    digitalWrite(LEFT_IN1, HIGH);
+    digitalWrite(LEFT_IN2, LOW);
+    digitalWrite(RIGHT_IN1, LOW);
+    digitalWrite(RIGHT_IN2, HIGH);
+    setSpeed(MOTOR_SPEED);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  SETUP
-// ─────────────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
-    delay(500);
+    delay(1000);
 
-    pinMode(LEFT_IN1,  OUTPUT);
-    pinMode(LEFT_IN2,  OUTPUT);
+    pinMode(LEFT_IN1, OUTPUT);
+    pinMode(LEFT_IN2, OUTPUT);
     pinMode(RIGHT_IN1, OUTPUT);
     pinMode(RIGHT_IN2, OUTPUT);
 
-    // ESP32 Arduino Core 3.x PWM API
-    // ledcAttach(pin, frequency_Hz, resolution_bits)
-    ledcAttach(LEFT_PWM,  PWM_FREQ_HZ, PWM_RESOLUTION);
+    // ESP32 Arduino Core 3.x PWM
+    ledcAttach(LEFT_PWM, PWM_FREQ_HZ, PWM_RESOLUTION);
     ledcAttach(RIGHT_PWM, PWM_FREQ_HZ, PWM_RESOLUTION);
 
     motorsStop();
 
-    Serial.println();
+    Serial.println("\n============================================");
+    Serial.println("  BUILDScan Rover -- Motor Diagnostic (AUTO)");
     Serial.println("============================================");
-    Serial.println("  BUILDScan Rover -- Motor Diagnostic");
-    Serial.println("  HW-095 / L298N  |  4WD  |  115200 baud");
-    Serial.println("============================================");
-    Serial.println("  GPIO layout:");
-    Serial.println("    LEFT   PWM=GPIO14  IN1=GPIO26  IN2=GPIO25");
-    Serial.println("    RIGHT  PWM=GPIO27  IN1=GPIO33  IN2=GPIO32");
-    Serial.println("  Speed: 80/255 (31%) -- conservative test");
-    Serial.println("============================================");
-    Serial.println("  Commands (send single character):");
-    Serial.println("    F = Forward");
-    Serial.println("    B = Backward");
-    Serial.println("    L = Turn Left");
-    Serial.println("    R = Turn Right");
-    Serial.println("    S = Stop");
-    Serial.println("============================================");
-    Serial.println("  MOTORS: STOPPED -- awaiting command...");
-    Serial.println("============================================");
+    Serial.println("  WIRING CHECK:");
+    Serial.println("    LEFT : ENA=GPIO14, IN1=GPIO26, IN2=GPIO25");
+    Serial.println("    RIGHT: ENB=GPIO27, IN3=GPIO33, IN4=GPIO32");
+    Serial.println("    GND  : ESP32 GND <-> L298N GND");
+    Serial.println("    POWER: Battery connected to L298N 12V + GND");
+    Serial.println("--------------------------------------------");
+    Serial.println("  AUTO SEQUENCE STARTING in 2 SECONDS...");
+    Serial.println("  (Type 'S' to STOP, 'A' to re-enable AUTO)");
+    Serial.println("  (Type 'F', 'B', 'L', 'R' for manual control)");
+    Serial.println("============================================\n");
+
+    lastStepTime = millis();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  LOOP
-// ─────────────────────────────────────────────────────────────────────────────
 void loop() {
+    // Check for user manual serial commands
     if (Serial.available() > 0) {
         char cmd = (char)Serial.read();
+        while (Serial.available() > 0) Serial.read(); // flush
 
-        while (Serial.available() > 0) {
-            char peek = (char)Serial.peek();
-            if (peek == '\n' || peek == '\r' || peek == ' ') {
-                Serial.read();
-            } else {
-                break;
-            }
+        if (cmd == 'S' || cmd == 's') {
+            autoMode = false;
+            motorsStop();
+            Serial.println(">> STOPPED (Auto mode paused. Send 'A' to resume)");
+        } else if (cmd == 'F' || cmd == 'f') {
+            autoMode = false;
+            motorsForward();
+            Serial.println(">> FORWARD (Speed: 200/255)");
+        } else if (cmd == 'B' || cmd == 'b') {
+            autoMode = false;
+            motorsBackward();
+            Serial.println(">> BACKWARD (Speed: 200/255)");
+        } else if (cmd == 'L' || cmd == 'l') {
+            autoMode = false;
+            motorsTurnLeft();
+            Serial.println(">> TURN LEFT");
+        } else if (cmd == 'R' || cmd == 'r') {
+            autoMode = false;
+            motorsTurnRight();
+            Serial.println(">> TURN RIGHT");
+        } else if (cmd == 'A' || cmd == 'a') {
+            autoMode = true;
+            autoStep = 0;
+            lastStepTime = millis();
+            Serial.println(">> AUTO MODE RESUMED");
         }
+    }
 
-        if (cmd == '\n' || cmd == '\r' || cmd == ' ') return;
-
-        switch (cmd) {
-
-            case 'F': case 'f':
-                motorsForward();
-                Serial.println();
-                Serial.println("F");
-                Serial.println("FORWARD -- LEFT + RIGHT MOTOR SIDES");
+    // Auto test sequence
+    if (autoMode) {
+        unsigned long now = millis();
+        switch (autoStep) {
+            case 0: // Startup delay
+                if (now - lastStepTime >= 2000) {
+                    Serial.println("[AUTO] 1. FORWARD (2 seconds)...");
+                    motorsForward();
+                    autoStep = 1;
+                    lastStepTime = now;
+                }
                 break;
 
-            case 'B': case 'b':
-                motorsBackward();
-                Serial.println();
-                Serial.println("B");
-                Serial.println("BACKWARD -- LEFT + RIGHT MOTOR SIDES");
+            case 1: // Forward running
+                if (now - lastStepTime >= 2000) {
+                    Serial.println("[AUTO] STOP (2 seconds)...");
+                    motorsStop();
+                    autoStep = 2;
+                    lastStepTime = now;
+                }
                 break;
 
-            case 'L': case 'l':
-                motorsTurnLeft();
-                Serial.println();
-                Serial.println("L");
-                Serial.println("TURN LEFT -- LEFT REVERSE, RIGHT FORWARD");
+            case 2: // Stopped after forward
+                if (now - lastStepTime >= 2000) {
+                    Serial.println("[AUTO] 2. REVERSE (2 seconds)...");
+                    motorsBackward();
+                    autoStep = 3;
+                    lastStepTime = now;
+                }
                 break;
 
-            case 'R': case 'r':
-                motorsTurnRight();
-                Serial.println();
-                Serial.println("R");
-                Serial.println("TURN RIGHT -- LEFT FORWARD, RIGHT REVERSE");
+            case 3: // Reverse running
+                if (now - lastStepTime >= 2000) {
+                    Serial.println("[AUTO] STOP (2 seconds)...");
+                    motorsStop();
+                    autoStep = 4;
+                    lastStepTime = now;
+                }
                 break;
 
-            case 'S': case 's':
-                motorsStop();
-                Serial.println();
-                Serial.println("S");
-                Serial.println("STOPPED");
+            case 4: // Stopped after reverse
+                if (now - lastStepTime >= 2000) {
+                    Serial.println("[AUTO] 3. TURN LEFT (2 seconds)...");
+                    motorsTurnLeft();
+                    autoStep = 5;
+                    lastStepTime = now;
+                }
                 break;
 
-            default:
-                Serial.print("UNKNOWN: '");
-                Serial.print(cmd);
-                Serial.println("'  ->  use F, B, L, R, or S");
+            case 5: // Turn left running
+                if (now - lastStepTime >= 2000) {
+                    Serial.println("[AUTO] STOP (2 seconds)...");
+                    motorsStop();
+                    autoStep = 6;
+                    lastStepTime = now;
+                }
+                break;
+
+            case 6: // Stopped after left
+                if (now - lastStepTime >= 2000) {
+                    Serial.println("[AUTO] 4. TURN RIGHT (2 seconds)...");
+                    motorsTurnRight();
+                    autoStep = 7;
+                    lastStepTime = now;
+                }
+                break;
+
+            case 7: // Turn right running
+                if (now - lastStepTime >= 2000) {
+                    Serial.println("[AUTO] ALL TESTS COMPLETE. Pausing 5 seconds before repeating...");
+                    motorsStop();
+                    autoStep = 8;
+                    lastStepTime = now;
+                }
+                break;
+
+            case 8: // Pause before loop
+                if (now - lastStepTime >= 5000) {
+                    autoStep = 0;
+                    lastStepTime = now;
+                }
                 break;
         }
     }
