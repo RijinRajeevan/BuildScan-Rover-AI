@@ -5,20 +5,16 @@
 
 // =====================================================
 // BUILDScan ROVER - ESP32 MASTER CONTROLLER
-// Bluetooth + 4 DC motors + HC-SR04 + LCD + PCA9685
+// Dynamic Braking Distance + Bluetooth + Motors + Ultrasonic
 // =====================================================
 
 // ---------------- BLUETOOTH ----------------
-// Module TXD -> ESP32 GPIO16
-// Module RXD <- ESP32 GPIO17
-// Cross TX and RX. Common GND required.
 HardwareSerial BT(2);
 const int BT_RX_PIN = 16;
 const int BT_TX_PIN = 17;
 const uint32_t BT_BAUD = 9600;
 
 // ---------------- MOTOR DRIVER ----------------
-// Reported wiring: HW-095 / L298N-type driver
 const int ENA = 14;
 const int IN1 = 26;
 const int IN2 = 25;
@@ -26,30 +22,38 @@ const int ENB = 27;
 const int IN3 = 33;
 const int IN4 = 32;
 
-// ---------------- ULTRASONIC ----------------
+// ---------------- PWM SPEED CONFIG ----------------
+const int PWM_FREQ = 1000;         // 1 kHz PWM frequency
+const int PWM_RES  = 8;            // 8-bit resolution (0 to 255)
+
+int currentSpeed = 160;            // Default speed (0 - 255)
+
+// ---------------- ULTRASONIC & DYNAMIC BRAKING ----------------
 const int TRIG_PIN = 5;
 const int ECHO_PIN = 18;
 
-// Stop forward movement when an obstacle is closer
-// than this distance. Set to 0 to disable this check.
-const float OBSTACLE_LIMIT_CM = 20.0;
+// Dynamic Braking Limits:
+// At minimum speed (~80 PWM), stop if obstacle is within 15 cm.
+// At maximum speed (255 PWM), stop early if obstacle is within 45 cm.
+const float MIN_BRAKE_DIST_CM = 15.0;
+const float MAX_BRAKE_DIST_CM = 45.0;
+
+float getDynamicStopDistance() {
+  // Linearly scale required stopping distance based on current speed
+  float safeDistance = map(currentSpeed, 80, 255, (long)MIN_BRAKE_DIST_CM, (long)MAX_BRAKE_DIST_CM);
+  return constrain(safeDistance, MIN_BRAKE_DIST_CM, MAX_BRAKE_DIST_CM);
+}
 
 // ---------------- LCD ----------------
-// LCD uses GPIO19/23 through your logic-level converter.
-// This constructor assumes LCD address 0x27.
 const int LCD_SDA = 19;
 const int LCD_SCL = 23;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ---------------- PCA9685 ----------------
-// PCA9685 uses its own I2C bus on GPIO21/22.
 const int PCA_SDA = 21;
 const int PCA_SCL = 22;
 TwoWire PCAWire(1);
 Adafruit_PWMServoDriver pca(0x40, PCAWire);
-
-// PCA channel used by the MG996R signal wire.
-// This sketch does NOT move the servo automatically.
 const int SERVO_CHANNEL = 0;
 
 // ---------------- STATUS ----------------
@@ -65,29 +69,37 @@ String btBuffer;
 
 unsigned long lastDistanceTime = 0;
 unsigned long lastLCDTime = 0;
-unsigned long lastStatusTime = 0;
 
 // =====================================================
 // OUTPUT MESSAGES
-// Send reports to USB Serial Monitor and Bluetooth.
 // =====================================================
 void report(const String &message) {
   Serial.println(message);
   BT.println(message);
 }
 
-void reportUSB(const String &message) {
-  Serial.println(message);
+// =====================================================
+// MOTOR SPEED & CONTROL (ESP32 Core 3.x Compatible)
+// =====================================================
+void applySpeed(int speedVal) {
+  currentSpeed = constrain(speedVal, 0, 255);
+  #if ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcWrite(ENA, currentSpeed);
+    ledcWrite(ENB, currentSpeed);
+  #else
+    ledcWrite(0, currentSpeed);
+    ledcWrite(1, currentSpeed);
+  #endif
 }
 
-// =====================================================
-// MOTOR CONTROL
-// The exact direction depends on motor wiring.
-// Test with wheels raised off the floor.
-// =====================================================
 void stopMotors() {
-  digitalWrite(ENA, LOW);
-  digitalWrite(ENB, LOW);
+  #if ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcWrite(ENA, 0);
+    ledcWrite(ENB, 0);
+  #else
+    ledcWrite(0, 0);
+    ledcWrite(1, 0);
+  #endif
 
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
@@ -103,9 +115,7 @@ void driveForward() {
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
 
-  digitalWrite(ENA, HIGH);
-  digitalWrite(ENB, HIGH);
-
+  applySpeed(currentSpeed);
   currentMotion = "FORWARD";
 }
 
@@ -115,97 +125,84 @@ void driveBackward() {
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 
-  digitalWrite(ENA, HIGH);
-  digitalWrite(ENB, HIGH);
-
+  applySpeed(currentSpeed);
   currentMotion = "BACKWARD";
 }
 
 void turnLeft() {
-  // Left side backward, right side forward.
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
 
-  digitalWrite(ENA, HIGH);
-  digitalWrite(ENB, HIGH);
-
+  applySpeed(currentSpeed);
   currentMotion = "LEFT";
 }
 
 void turnRight() {
-  // Left side forward, right side backward.
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 
-  digitalWrite(ENA, HIGH);
-  digitalWrite(ENB, HIGH);
-
+  applySpeed(currentSpeed);
   currentMotion = "RIGHT";
 }
 
 bool forwardBlocked() {
-  if (OBSTACLE_LIMIT_CM <= 0) return false;
+  float threshold = getDynamicStopDistance();
 
-  // Only block when a valid, recent reading indicates an obstacle.
-  if (ultrasonicHasEcho &&
-      distanceCm > 0 &&
-      distanceCm <= OBSTACLE_LIMIT_CM) {
+  if (ultrasonicHasEcho && distanceCm > 0 && distanceCm <= threshold) {
     return true;
   }
-
   return false;
 }
 
 void commandForward() {
+  float threshold = getDynamicStopDistance();
   if (forwardBlocked()) {
     stopMotors();
-    report("SAFETY STOP: obstacle at " +
-           String(distanceCm, 1) + " cm. Forward blocked.");
+    report("SAFETY STOP: obstacle at " + String(distanceCm, 1) + 
+           " cm (Min safe dist for speed " + String(currentSpeed) + " is " + String(threshold, 0) + " cm)");
     return;
   }
-
   driveForward();
-  report("Motor command: FORWARD");
+  report("Motor command: FORWARD (Speed: " + String(currentSpeed) + 
+         "/255 | Safe Braking Dist: " + String(threshold, 0) + " cm)");
 }
 
 void commandBackward() {
   driveBackward();
-  report("Motor command: BACKWARD");
+  report("Motor command: BACKWARD (Speed: " + String(currentSpeed) + "/255)");
 }
 
 void commandLeft() {
   turnLeft();
-  report("Motor command: LEFT");
+  report("Motor command: LEFT (Speed: " + String(currentSpeed) + "/255)");
 }
 
 void commandRight() {
   turnRight();
-  report("Motor command: RIGHT");
+  report("Motor command: RIGHT (Speed: " + String(currentSpeed) + "/255)");
 }
 
 // =====================================================
 // ULTRASONIC SENSOR
-// ECHO must use your voltage divider before GPIO18.
 // =====================================================
 float readDistanceCM() {
   digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(3);
+  delayMicroseconds(2);
 
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  unsigned long duration =
-      pulseIn(ECHO_PIN, HIGH, 30000UL);
+  // Timeout set to 20ms (approx 3.4 meters max range)
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 20000UL);
 
   if (duration == 0) {
     return -1.0;
   }
-
   return (duration * 0.0343f) / 2.0f;
 }
 
@@ -214,28 +211,17 @@ void updateUltrasonic() {
   distanceCm = reading;
   ultrasonicHasEcho = (reading > 0);
 
-  if (reading > 0) {
-    Serial.print("[HC-SR04] PASS | Distance: ");
-    Serial.print(reading, 1);
-    Serial.println(" cm");
-  } else {
-    Serial.println(
-      "[HC-SR04] CHECK | No echo or timeout");
-  }
-
-  // Safety stop if forward motion is active and
-  // a valid reading detects an obstacle.
-  if (currentMotion == "FORWARD" &&
-      forwardBlocked()) {
+  // Fast-acting Emergency Braking if moving FORWARD
+  if (currentMotion == "FORWARD" && forwardBlocked()) {
     stopMotors();
-    report("SAFETY STOP: obstacle detected!");
+    float threshold = getDynamicStopDistance();
+    report("EMERGENCY BRAKE! Obstacle at " + String(distanceCm, 1) + 
+           " cm (Braking threshold: " + String(threshold, 0) + " cm)");
   }
 }
 
 // =====================================================
 // I2C BUS SCANNING
-// LCD: Wire on GPIO19/23
-// PCA9685: PCAWire on GPIO21/22
 // =====================================================
 bool deviceResponds(TwoWire &bus, uint8_t address) {
   bus.beginTransmission(address);
@@ -245,40 +231,18 @@ bool deviceResponds(TwoWire &bus, uint8_t address) {
 void scanI2CBuses() {
   report("");
   report("========== I2C SCAN ==========");
-
   lcdFound = false;
-
-  report("Scanning LCD bus GPIO19/23...");
   for (uint8_t address = 1; address < 127; address++) {
     if (deviceResponds(Wire, address)) {
-      report("LCD bus device ACK at 0x" +
-             String(address, HEX));
-
       if (address == 0x27 || address == 0x3F) {
         lcdFound = true;
       }
     }
   }
 
-  if (lcdFound) {
-    report("LCD BUS: PASS - common LCD address found.");
-    report("LCD constructor currently uses 0x27.");
-    report("If detected address is 0x3F, change it in code.");
-  } else {
-    report("LCD BUS: CHECK - no 0x27/0x3F device.");
-    report("Check 5V, GND, level converter, SDA/SCL.");
-  }
-
-  report("Scanning PCA bus GPIO21/22...");
+  report(String("LCD: ") + (lcdFound ? "FOUND" : "NOT DETECTED"));
   pcaFound = deviceResponds(PCAWire, 0x40);
-
-  if (pcaFound) {
-    report("PCA9685: PASS - ACK at 0x40.");
-  } else {
-    report("PCA9685: FAIL - no ACK at 0x40.");
-    report("Check VCC, GND, SDA21, SCL22.");
-  }
-
+  report(String("PCA9685: ") + (pcaFound ? "FOUND" : "NOT DETECTED"));
   report("==============================");
 }
 
@@ -288,62 +252,48 @@ void scanI2CBuses() {
 void updateLCD() {
   if (!lcdFound) return;
 
+  float safeDist = getDynamicStopDistance();
+
   lcd.setCursor(0, 0);
   lcd.print("                ");
   lcd.setCursor(0, 0);
 
   if (distanceCm > 0) {
-    lcd.print("Dist:");
-    lcd.print(distanceCm, 1);
-    lcd.print("cm");
+    lcd.print("D:");
+    lcd.print(distanceCm, 0);
+    lcd.print("cm Safe:");
+    lcd.print((int)safeDist);
+    lcd.print("c");
   } else {
-    lcd.print("Dist: NO ECHO");
+    lcd.print("D:-- Safe:");
+    lcd.print((int)safeDist);
+    lcd.print("c");
   }
 
   lcd.setCursor(0, 1);
   lcd.print("                ");
   lcd.setCursor(0, 1);
   lcd.print(currentMotion);
+  lcd.print(" S:");
+  lcd.print(currentSpeed);
 }
 
 // =====================================================
 // STATUS REPORT
 // =====================================================
 void showStatus() {
+  float safeDist = getDynamicStopDistance();
   report("");
   report("========== HARDWARE STATUS ==========");
-
-  report("ESP32: RUNNING");
-  report("Bluetooth UART: GPIO16/17 at " +
-         String(BT_BAUD) + " baud");
-  report("Motor command state: " + currentMotion);
-
-  report(String("HC-SR04: ") +
-         (ultrasonicHasEcho ? "PASS" : "CHECK"));
-
-  if (distanceCm > 0) {
-    report("Distance: " + String(distanceCm, 1) + " cm");
-  }
-
-  report(String("LCD I2C response: ") +
-         (lcdFound ? "PASS" : "CHECK"));
-
-  report(String("PCA9685 I2C response: ") +
-         (pcaFound ? "PASS" : "FAIL"));
-
-  report(String("PCA9685 initialization: ") +
-         (pcaInitialized ? "PASS" : "CHECK"));
-
-  report("Motor wiring/electrical condition: NOT proven by software.");
-  report("Servo motion and servo supply: NOT tested.");
-  report("Raspberry Pi / LiDAR / fan: NOT tested by this sketch.");
-
+  report("Current Speed: " + String(currentSpeed) + " / 255");
+  report("Safe Braking Distance: " + String(safeDist, 1) + " cm");
+  report("Motor state: " + currentMotion);
+  report("HC-SR04: " + (ultrasonicHasEcho ? ("Distance: " + String(distanceCm, 1) + " cm") : "NO ECHO"));
   report("=====================================");
 }
 
 // =====================================================
 // COMMAND PROCESSOR
-// Accepts commands from USB or Bluetooth.
 // =====================================================
 void processCommand(String cmd, bool fromBluetooth) {
   cmd.trim();
@@ -351,37 +301,45 @@ void processCommand(String cmd, bool fromBluetooth) {
 
   if (cmd.length() == 0) return;
 
-  Serial.println(
-    String(fromBluetooth ? "[BT RX] " : "[USB RX] ") + cmd);
+  Serial.println(String(fromBluetooth ? "[BT RX] " : "[USB RX] ") + cmd);
 
-  if (cmd == "PING") {
-    report("PONG - Bluetooth/serial command received.");
+  // Speed commands
+  if (cmd.startsWith("SPEED ") || cmd.startsWith("SPD ")) {
+    int spaceIdx = cmd.indexOf(' ');
+    int newSpeed = cmd.substring(spaceIdx + 1).toInt();
+    applySpeed(newSpeed);
+    report("Speed: " + String(currentSpeed) + " | Safe brake limit: " + String(getDynamicStopDistance(), 0) + " cm");
   }
-  else if (cmd == "HELP") {
-    report("COMMANDS: F/FORWARD, B/BACKWARD, L/LEFT, R/RIGHT, S/STOP");
-    report("More: PING, STATUS, DIST, SCAN, SERVO, HELP");
+  else if (cmd == "SLOW" || cmd == "1") {
+    applySpeed(110);
+    report("Speed SLOW (110) | Safe brake limit: " + String(getDynamicStopDistance(), 0) + " cm");
   }
-  else if (cmd == "F" || cmd == "FORWARD" ||
-           cmd == "FRONT" || cmd == "W") {
+  else if (cmd == "MED" || cmd == "2") {
+    applySpeed(170);
+    report("Speed MEDIUM (170) | Safe brake limit: " + String(getDynamicStopDistance(), 0) + " cm");
+  }
+  else if (cmd == "FAST" || cmd == "3") {
+    applySpeed(255);
+    report("Speed MAXIMUM (255) | Safe brake limit: " + String(getDynamicStopDistance(), 0) + " cm");
+  }
+  // Direction commands
+  else if (cmd == "F" || cmd == "FORWARD" || cmd == "W") {
     commandForward();
   }
-  else if (cmd == "B" || cmd == "BACK" ||
-           cmd == "BACKWARD" || cmd == "REVERSE") {
+  else if (cmd == "B" || cmd == "BACK" || cmd == "BACKWARD" || cmd == "S_REV") {
     commandBackward();
   }
-  else if (cmd == "L" || cmd == "LEFT" ||
-           cmd == "A") {
+  else if (cmd == "L" || cmd == "LEFT" || cmd == "A") {
     commandLeft();
   }
-  else if (cmd == "R" || cmd == "RIGHT" ||
-           cmd == "D") {
+  else if (cmd == "R" || cmd == "RIGHT" || cmd == "D") {
     commandRight();
   }
-  else if (cmd == "S" || cmd == "STOP" ||
-           cmd == "X") {
+  else if (cmd == "S" || cmd == "STOP" || cmd == "X") {
     stopMotors();
     report("STOP: motors disabled.");
   }
+  // Diagnostic commands
   else if (cmd == "PING") {
     report("PONG");
   }
@@ -390,35 +348,28 @@ void processCommand(String cmd, bool fromBluetooth) {
   }
   else if (cmd == "DIST") {
     updateUltrasonic();
+    report("Distance: " + String(distanceCm, 1) + " cm | Safe threshold: " + String(getDynamicStopDistance(), 0) + " cm");
   }
   else if (cmd == "SCAN") {
     scanI2CBuses();
   }
-  else if (cmd == "SERVO") {
-    if (pcaInitialized) {
-      report("PCA9685 initialized. Servo signal channel is 0.");
-      report("Servo has NOT been moved by this test.");
-      report("Connect verified regulated servo power before testing.");
-    } else {
-      report("Servo test unavailable: PCA9685 not initialized.");
-    }
+  else if (cmd == "HELP") {
+    report("--- Commands ---");
+    report("Motion: F, B, L, R, S");
+    report("Speed:  SPEED 80-255, SLOW, MED, FAST");
+    report("Status: STATUS, DIST, PING, SCAN");
   }
   else {
     report("Unknown command: " + cmd);
-    report("Send HELP to list commands.");
   }
 }
 
 // =====================================================
-// SERIAL INPUT READER
-// Send commands ending with newline.
+// SERIAL READER
 // =====================================================
-void readCommandStream(Stream &port,
-                       String &buffer,
-                       bool isBluetooth) {
+void readCommandStream(Stream &port, String &buffer, bool isBluetooth) {
   while (port.available() > 0) {
     char c = (char)port.read();
-
     if (c == '\n' || c == '\r') {
       if (buffer.length() > 0) {
         processCommand(buffer, isBluetooth);
@@ -429,7 +380,6 @@ void readCommandStream(Stream &port,
         buffer += c;
       } else {
         buffer = "";
-        report("Command too long; input cleared.");
       }
     }
   }
@@ -444,71 +394,55 @@ void setup() {
 
   BT.begin(BT_BAUD, SERIAL_8N1, BT_RX_PIN, BT_TX_PIN);
 
-  // Motor driver pins
-  pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
-  pinMode(ENB, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
+
+  #if ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcAttach(ENA, PWM_FREQ, PWM_RES);
+    ledcAttach(ENB, PWM_FREQ, PWM_RES);
+  #else
+    ledcSetup(0, PWM_FREQ, PWM_RES);
+    ledcSetup(1, PWM_FREQ, PWM_RES);
+    ledcAttachPin(ENA, 0);
+    ledcAttachPin(ENB, 1);
+  #endif
+
   stopMotors();
 
-  // HC-SR04 pins
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
   digitalWrite(TRIG_PIN, LOW);
 
-  // LCD I2C bus
   Wire.begin(LCD_SDA, LCD_SCL);
   Wire.setClock(100000);
 
-  // PCA9685 I2C bus
   PCAWire.begin(PCA_SDA, PCA_SCL);
   PCAWire.setClock(100000);
-
-  Serial.println();
-  Serial.println("==========================================");
-  Serial.println(" BUILDScan Rover - ESP32 Diagnostics");
-  Serial.println(" USB Serial Monitor: 115200 baud");
-  Serial.println(" Bluetooth UART: 9600 baud");
-  Serial.println(" Motors are OFF at startup.");
-  Serial.println("==========================================");
-
-  report("ESP32 booted. Starting hardware checks...");
 
   scanI2CBuses();
 
   if (lcdFound) {
-    // The LCD library uses Wire (GPIO19/23).
-    // Ensure the constructor address matches your scan.
     lcd.init();
     lcd.backlight();
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("BUILDScan Rover");
     lcd.setCursor(0, 1);
-    lcd.print("Diagnostics");
-    report("LCD initialization attempted.");
+    lcd.print("Adaptive Braking");
   }
 
   if (pcaFound) {
     pcaInitialized = pca.begin();
-
     if (pcaInitialized) {
       pca.setPWMFreq(50);
-      report("PCA9685 initialization: PASS.");
-      report("No servo movement commanded at startup.");
-    } else {
-      report("PCA9685 initialization: CHECK.");
     }
   }
 
   updateUltrasonic();
   updateLCD();
-
-  report("Startup checks finished.");
-  report("Send HELP from Android Bluetooth terminal.");
-  report("Bluetooth test: send PING and look for PONG.");
+  report("Adaptive Safety Braking Ready!");
 }
 
 // =====================================================
@@ -518,13 +452,14 @@ void loop() {
   readCommandStream(Serial, usbBuffer, false);
   readCommandStream(BT, btBuffer, true);
 
-  // Print sensor readings periodically.
-  if (millis() - lastDistanceTime >= 1000) {
+  // Fast ultrasonic check: 50 ms (20Hz) when driving FORWARD, 500 ms when stopped
+  unsigned long distanceInterval = (currentMotion == "FORWARD") ? 50 : 500;
+  if (millis() - lastDistanceTime >= distanceInterval) {
     lastDistanceTime = millis();
     updateUltrasonic();
   }
 
-  // Refresh LCD twice per second.
+  // Update LCD twice per second
   if (millis() - lastLCDTime >= 500) {
     lastLCDTime = millis();
     updateLCD();
