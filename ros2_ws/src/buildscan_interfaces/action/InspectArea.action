@@ -2,7 +2,7 @@
 # Long-running structural inspection mission action
 #
 # Usage:
-#   ros2 action send_goal /inspect_area buildscan_interfaces/action/InspectArea \
+#   ros2 action send_goal /inspect_area buildscan_interfaces/action/InspectArea
 #     "{area_name: 'Wall_A', confidence_threshold: 0.30}"
 #
 # The action server executes:

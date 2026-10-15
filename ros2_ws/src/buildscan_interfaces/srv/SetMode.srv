@@ -1,6 +1,6 @@
 # SetMode.srv
 # Switch rover operating mode
-# Usage: ros2 service call /set_mode buildscan_interfaces/srv/SetMode \
+# Usage: ros2 service call /set_mode buildscan_interfaces/srv/SetMode
 #          "{mode: 'MANUAL'}"
 #
 # Valid modes:
