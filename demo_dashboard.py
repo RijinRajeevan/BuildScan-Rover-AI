@@ -222,7 +222,7 @@ def _demo_loop(stop_event: threading.Event):
         time.sleep(0.12)
 
 
-def start_stream(mode: str = "webcam", pi_ip: str = "10.120.68.129", pi_topic: str = "/camera/image_raw"):
+def start_stream(mode: str = "webcam", pi_ip: str = "10.195.174.129", pi_topic: str = "/image_raw"):
     if st.session_state.get("streaming"):
         return
     ev = threading.Event()
@@ -436,7 +436,7 @@ def main():
     for k, v in [("streaming", False), ("demo_mode", False), ("stream_mode", "idle"),
                   ("snapshot", DetectionSnapshot()), ("stop_event", None),
                   ("stream_thread", None), ("stream_error", None),
-                  ("pi_ip", "10.120.68.129"), ("pi_topic", "/image_raw")]:
+                  ("pi_ip", "10.195.174.129"), ("pi_topic", "/image_raw")]:
         st.session_state.setdefault(k, v)
 
     snap:        DetectionSnapshot = st.session_state["snapshot"]
