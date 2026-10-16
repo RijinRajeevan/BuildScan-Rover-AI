@@ -1,602 +1,937 @@
-#!/usr/bin/env python3
 """
-demo_dashboard.py  -  BuildScan Rover AI Dashboard (Premium Edition)
-Dark glassmorphism UI | Live Pi camera stream | Real-time YOLO crack detection
+BuildScan Rover AI  ·  Live Structural Health Inspection
+=========================================================
+Architecture:
+  Raspberry Pi 4  →  Logitech Brio 100  →  ROS2 web_video_server (port 8080)
+           |
+      Wi-Fi / LAN
+           |
+  Laptop  →  YOLO26n-seg on RTX 3050 GPU  →  Annotated MJPEG (port 8081)
+           |
+  Streamlit Dashboard  →  Browser (live stream + metrics + defect log)
+"""
 
-Pi Camera Stream: http://10.195.174.129:8080/stream?topic=/image_raw
-"""
-import io, os, math, random, time, uuid, tempfile, datetime, threading, dataclasses
+import os, sys, io, time, math, datetime, tempfile, threading
+import urllib.request, json, random, logging
+from dataclasses import dataclass, field
+from typing import List, Optional
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Optional
 
-import cv2
-import numpy as np
-import streamlit as st
+import cv2, numpy as np, streamlit as st
 from PIL import Image as PILImage
 
+logging.basicConfig(level=logging.INFO,
+                    format="[BuildScan %(asctime)s] %(message)s",
+                    datefmt="%H:%M:%S")
+log = logging.getLogger("buildscan")
+
+# ── PyTorch / YOLO ──────────────────────────────────────────
 try:
+    import torch
     from ultralytics import YOLO
-    YOLO_AVAILABLE = True
-except ImportError:
-    YOLO_AVAILABLE = False
+    _CUDA = torch.cuda.is_available()
+    GPU_NAME = torch.cuda.get_device_name(0) if _CUDA else "CPU"
+    _DEVICE = 0 if _CUDA else "cpu"
+    YOLO_OK = True
+except Exception:
+    _CUDA = False; GPU_NAME = "CPU"; _DEVICE = "cpu"; YOLO_OK = False
 
+# ── ReportLab (optional PDF) ────────────────────────────────
 try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.colors import HexColor, white
-    from reportlab.lib.utils import ImageReader
-    REPORTLAB_AVAILABLE = True
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                                    Table, TableStyle, Image as RLImage, HRFlowable)
+    PDF_OK = True
 except ImportError:
-    REPORTLAB_AVAILABLE = False
+    PDF_OK = False
 
-# ── Constants ─────────────────────────────────────────────
-PI_IP         = "10.195.174.129"
-PI_PORT       = 8080
-PI_TOPIC      = "/image_raw"
-PI_STREAM_URL = f"http://{PI_IP}:{PI_PORT}/stream?topic={PI_TOPIC}"
+# ── Constants ────────────────────────────────────────────────
+PI_IP          = "10.195.174.129"
+PI_PORT        = 8080
+PI_STREAM      = f"http://{PI_IP}:{PI_PORT}/stream?topic=/image_raw"
+PI_SNAP        = f"http://{PI_IP}:{PI_PORT}/snapshot?topic=/image_raw"
+AI_PORT        = 8081
+AI_STREAM      = f"http://127.0.0.1:{AI_PORT}/video_feed"
+MODEL_PATH     = Path("models/yolo26n-seg.pt")
+PX_MM          = 0.025          # 1 pixel ≈ 0.025 mm (calibrated)
+CONF_THRESH    = 0.25
+TRACK_RADIUS   = 65             # px  — spatial dedup radius
+TRACK_TTL      = 4.0            # sec — how long a track lives without a match
 
-SEV_LOW_W  = 70
-SEV_MED_W  = 150
-R_NONE   = "No crack detected"
-R_LOW    = "Apply surface filler and sealant"
-R_MEDIUM = "Use epoxy injection repair"
-R_HIGH   = "Urgent structural inspection required"
-
-_DIR         = Path(__file__).resolve().parent
-_MODEL_PATH  = _DIR / "models" / "yolo26n-seg.pt"
-_CAM_IDX     = int(os.environ.get("BUILDSCAN_CAM_IDX", "0"))
-_REFRESH     = 0.25
-
-
-# ── Data ───────────────────────────────────────────────────
-@dataclasses.dataclass
-class Snap:
-    annotated_frame:    Optional[np.ndarray] = None
-    original_frame:     Optional[np.ndarray] = None
-    cracks_detected:    int   = 0
-    average_confidence: float = 0.0
-    maximum_width:      float = 0.0
-    total_length:       float = 0.0
-    severity:           str   = "NONE"
-    recommendation:     str   = R_NONE
-    timestamp:          Optional[datetime.datetime] = None
-    fps:                float = 0.0
-
-
-def classify(max_w, n):
-    if n == 0 or max_w == 0: return "NONE", R_NONE
-    if max_w < SEV_LOW_W:    return "LOW",  R_LOW
-    if max_w < SEV_MED_W:    return "MEDIUM", R_MEDIUM
-    return "HIGH", R_HIGH
-
-
-# ── Model ──────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading YOLO26n-seg model...")
-def load_model():
-    if not YOLO_AVAILABLE or not _MODEL_PATH.exists():
-        return None
-    try:
-        return YOLO(str(_MODEL_PATH))
-    except Exception:
-        return None
-
-
-# ── Inference ──────────────────────────────────────────────
-def analyze(model, frame, t0):
-    snap = Snap(original_frame=frame.copy(), timestamp=datetime.datetime.now())
-    if model is None:
-        snap.annotated_frame = frame.copy()
-        return snap
-    results   = model(frame, conf=0.30, imgsz=320, verbose=False)
-    annotated = frame.copy()
-    max_w = tot = 0.0
-    confs, count = [], 0
-    for result in results:
-        if result.boxes is None: continue
-        for box in result.boxes:
-            x1,y1,x2,y2 = map(int, box.xyxy[0].tolist())
-            conf = float(box.conf[0])
-            w, h = x2-x1, y2-y1
-            max_w = max(max_w, w)
-            tot  += math.sqrt(w*w + h*h)
-            confs.append(conf); count += 1
-            cv2.rectangle(annotated, (x1,y1),(x2,y2),(0,80,255),2)
-            cv2.rectangle(annotated, (x1,y1-22),(x1+110,y1),(0,80,255),-1)
-            cv2.putText(annotated, f"Crack {conf:.0%}", (x1+4,y1-6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255,255,255), 1)
-    h_i,w_i = annotated.shape[:2]
-    ov = annotated.copy()
-    cv2.rectangle(ov,(0,0),(w_i,38),(10,14,30),-1)
-    cv2.addWeighted(ov,0.75,annotated,0.25,0,annotated)
-    fps = 1.0 / max(time.time()-t0, 0.001)
-    ts  = datetime.datetime.now().strftime("%H:%M:%S")
-    cv2.putText(annotated,
-                f"BuildScan Rover  |  {ts}  |  Cracks: {count}  |  {fps:.1f} FPS",
-                (10,26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,210,255), 1)
-    sev, rec = classify(max_w, count)
-    snap.annotated_frame    = annotated
-    snap.cracks_detected    = count
-    snap.average_confidence = (sum(confs)/len(confs)*100) if confs else 0.0
-    snap.maximum_width      = max_w
-    snap.total_length       = tot
-    snap.severity           = sev
-    snap.recommendation     = rec
-    snap.fps                = fps
-    return snap
-
-
-# ── Demo frames ────────────────────────────────────────────
-def demo_frame(tick):
-    h, w = 480, 640
-    frame = np.full((h,w,3),(128,126,122),dtype=np.uint8)
-    noise = np.random.randint(-18,18,(h,w,3),dtype=np.int16)
-    frame = np.clip(frame.astype(np.int16)+noise,0,255).astype(np.uint8)
-    t = tick*0.04
-    cracks = [
-        (int(120+10*math.sin(t)),    180, int(290+8*math.cos(t)),    210, 0.87),
-        (int(340+6*math.sin(t+1)),   260, int(480+5*math.cos(t+1)), 310, 0.72),
-        (int(80+4*math.sin(t+2)),    360, int(200+6*math.cos(t+2)), 395, 0.61),
-    ]
-    ann = frame.copy()
-    ov  = ann.copy()
-    cv2.rectangle(ov,(0,0),(w,38),(10,14,30),-1)
-    cv2.addWeighted(ov,0.75,ann,0.25,0,ann)
-    max_w = tot = 0.0
-    confs = []
-    for (x1,y1,x2,y2,conf) in cracks:
-        bw = x2-x1; bl = math.sqrt((x2-x1)**2+(y2-y1)**2)
-        max_w = max(max_w,bw); tot+=bl; confs.append(conf)
-        cv2.rectangle(ann,(x1,y1),(x2,y2),(0,80,255),2)
-        cv2.rectangle(ann,(x1,y1-22),(x1+110,y1),(0,80,255),-1)
-        cv2.line(ann,(x1+random.randint(0,5),y1+random.randint(0,5)),
-                 (x2-random.randint(0,5),y2-random.randint(0,5)),(30,30,200),1)
-        cv2.putText(ann,f"Crack {conf:.0%}",(x1+4,y1-6),
-                    cv2.FONT_HERSHEY_SIMPLEX,0.52,(255,255,255),1)
-    ts = datetime.datetime.now().strftime("%H:%M:%S")
-    cv2.putText(ann,f"BuildScan Rover  |  {ts}  |  Cracks: {len(cracks)}  [DEMO]",
-                (10,26),cv2.FONT_HERSHEY_SIMPLEX,0.55,(0,210,255),1)
-    sev,rec = classify(max_w,len(cracks))
-    return Snap(annotated_frame=ann,original_frame=frame,
-                cracks_detected=len(cracks),
-                average_confidence=(sum(confs)/len(confs)*100) if confs else 0.0,
-                maximum_width=max_w,total_length=tot,
-                severity=sev,recommendation=rec,
-                timestamp=datetime.datetime.now())
-
-
-# ── Global State & Threads ─────────────────────────────────
-_GLOBAL_LOCK = threading.Lock()
-_GLOBAL_DATA = {
-    "snapshot": Snap(),
-    "streaming": True,
-    "stream_mode": "pi",
-    "stream_error": None,
-    "stop_event": None,
-    "thread": None,
+# Civil recommendations
+_R = {
+    "LOW":    "Apply surface sealant. Monitor periodically. (< 0.30 mm aperture)",
+    "MEDIUM": "Low-pressure epoxy resin injection recommended. (0.30–0.55 mm)",
+    "HIGH":   "⚠ Immediate structural engineering assessment required! (≥ 0.55 mm)",
 }
 
-def _cam_loop(ev, src):
-    model = load_model()
-    cap   = cv2.VideoCapture(src)
-    if not cap.isOpened():
-        label = f"Pi stream ({src})" if isinstance(src, str) else f"cam {src}"
-        with _GLOBAL_LOCK:
-            _GLOBAL_DATA["stream_error"] = f"Cannot connect to {label}."
-            _GLOBAL_DATA["streaming"]    = False
-            _GLOBAL_DATA["stream_mode"]  = "idle"
-        ev.set(); return
-    while not ev.is_set():
-        t0 = time.time()
-        ret, frame = cap.read()
-        if not ret: time.sleep(0.04); continue
-        snap = analyze(model, frame, t0)
-        with _GLOBAL_LOCK:
-            _GLOBAL_DATA["snapshot"] = snap
-        time.sleep(0.02)
-    cap.release()
+# ── Data Classes ─────────────────────────────────────────────
+@dataclass
+class Defect:
+    defect_id: str
+    timestamp: str
+    width_mm:  float
+    width_px:  float
+    length_mm: float
+    conf:      float
+    severity:  str
+    action:    str
+    bbox:      tuple = (0, 0, 0, 0)
 
-def _demo_loop(ev):
-    tick = 0
-    while not ev.is_set():
-        snap = demo_frame(tick)
-        with _GLOBAL_LOCK:
-            _GLOBAL_DATA["snapshot"] = snap
-        tick += 1; time.sleep(0.12)
 
-def inspect_pi_frame():
-    model = load_model()
-    snap_url = f"http://{PI_IP}:{PI_PORT}/snapshot?topic={PI_TOPIC}"
+@dataclass
+class EngineState:
+    connected:     bool  = False
+    cracks_now:    int   = 0
+    total_defects: int   = 0
+    avg_conf:      float = 0.0
+    max_width_mm:  float = 0.0
+    max_len_mm:    float = 0.0
+    severity:      str   = "NONE"
+    health_idx:    float = 100.0
+    action:        str   = "System initialising — connecting to Pi camera stream..."
+    fps:           float = 0.0
+    last_frame:    Optional[np.ndarray] = None
+    last_jpeg:     Optional[bytes]      = None
+    registry:      List[Defect]         = field(default_factory=list)
+
+# ── Shared Process-Level State (process-level singleton across reruns) ───
+if not hasattr(sys, "_buildscan_state"):
+    sys._buildscan_state = EngineState()
+    sys._buildscan_lock = threading.Lock()
+    sys._buildscan_svc_started = False
+
+_state = sys._buildscan_state
+_lock  = sys._buildscan_lock
+
+
+# ════════════════════════════════════════════════════════════
+#   LOCAL MJPEG STREAMING SERVER  (port AI_PORT)
+# ════════════════════════════════════════════════════════════
+class _MJPEGHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/video_feed"):
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.send_header("Server", "BuildScan-AI-Streamer")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Content-type", "multipart/x-mixed-replace;boundary=boundarydonotcross")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                while True:
+                    with _lock:
+                        jpg = _state.last_jpeg
+                    if jpg:
+                        part = (
+                            b"--boundarydonotcross\r\n"
+                            b"Content-type: image/jpeg\r\n"
+                            b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n"
+                            + jpg + b"\r\n"
+                        )
+                        self.wfile.write(part)
+                    time.sleep(0.033)   # ~30 fps cap
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+        elif self.path.startswith("/snapshot"):
+            with _lock:
+                jpg = _state.last_jpeg
+            if jpg:
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpg)))
+                self.end_headers()
+                self.wfile.write(jpg)
+            else:
+                self.send_error(503, "No frame available yet")
+        elif self.path == "/healthz":
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            with _lock:
+                body = json.dumps({
+                    "connected": _state.connected,
+                    "fps": round(_state.fps, 1),
+                    "cracks_now": _state.cracks_now,
+                    "total": _state.total_defects,
+                }).encode()
+            self.wfile.write(body)
+        else:
+            self.send_error(404)
+
+    def log_message(self, *_):
+        pass   # silence HTTP server noise
+
+
+def _run_mjpeg_server():
     try:
-        import urllib.request
-        req = urllib.request.Request(snap_url, headers={'Connection': 'close', 'User-Agent': 'BuildScan/1.0'})
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = resp.read()
-        arr = np.frombuffer(data, dtype=np.uint8)
-        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if frame is not None:
-            snap = analyze(model, frame, time.time())
-            with _GLOBAL_LOCK:
-                _GLOBAL_DATA["snapshot"] = snap
-            return True, "Analysis complete"
-    except Exception:
-        pass
-    try:
-        cap = cv2.VideoCapture(PI_STREAM_URL)
-        if cap.isOpened():
-            ret, frame = cap.read()
-            cap.release()
-            if ret and frame is not None:
-                snap = analyze(model, frame, time.time())
-                with _GLOBAL_LOCK:
-                    _GLOBAL_DATA["snapshot"] = snap
-                return True, "Analysis complete"
-    except Exception:
-        pass
-    return False, "Could not capture frame from Pi. Hint: On Pi, run web_video_server with -p server_threads:=4"
+        srv = ThreadingHTTPServer(("0.0.0.0", AI_PORT), _MJPEGHandler)
+        srv.daemon_threads = True
+        log.info(f"MJPEG server started → http://0.0.0.0:{AI_PORT}/video_feed")
+        srv.serve_forever()
+    except OSError as e:
+        log.warning(f"MJPEG server error (port already open?): {e}")
 
-def start_stream(mode="pi"):
-    with _GLOBAL_LOCK:
-        if _GLOBAL_DATA["streaming"] and _GLOBAL_DATA["stream_mode"] == mode:
-            return
-    stop_stream()
-    with _GLOBAL_LOCK:
-        ev = threading.Event()
-        _GLOBAL_DATA["stop_event"]   = ev
-        _GLOBAL_DATA["streaming"]    = True
-        _GLOBAL_DATA["stream_mode"]  = mode
-        _GLOBAL_DATA["stream_error"] = None
-        _GLOBAL_DATA["snapshot"]     = Snap()
-    if mode == "demo":
-        t = threading.Thread(target=_demo_loop, args=(ev,), daemon=True)
+
+# ════════════════════════════════════════════════════════════
+#   LIVE GPU INFERENCE WORKER  (runs in a daemon thread)
+# ════════════════════════════════════════════════════════════
+def _severity(aperture_px: float, n: int):
+    if n == 0:
+        return "NONE", "No structural defects visible. Concrete surface nominal."
+    w = aperture_px * PX_MM
+    if   w < 0.30: return "LOW",    _R["LOW"]
+    elif w < 0.55: return "MEDIUM", _R["MEDIUM"]
+    else:          return "HIGH",   _R["HIGH"]
+
+
+def _run_inference():
+    """
+    Permanent daemon thread.
+    Connects to Pi stream, pulls frames, runs YOLO on GPU,
+    annotates and stores latest JPEG + metrics in _state.
+    """
+    global _state
+
+    # ── Load YOLO model once ────────────────────────────────
+    model = None
+    if YOLO_OK and MODEL_PATH.exists():
         try:
-            from streamlit.runtime.scriptrunner import add_script_run_ctx
-            add_script_run_ctx(t)
-        except Exception: pass
-        t.start()
-        with _GLOBAL_LOCK:
-            _GLOBAL_DATA["thread"] = t
-    elif mode == "webcam":
-        t = threading.Thread(target=_cam_loop, args=(ev, _CAM_IDX), daemon=True)
+            model = YOLO(str(MODEL_PATH))
+            # Warm-up inference to initialise CUDA graph
+            dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+            model(dummy, conf=CONF_THRESH, device=_DEVICE, verbose=False)
+            log.info(f"YOLO26n-seg loaded — device={_DEVICE}  GPU={GPU_NAME}")
+        except Exception as e:
+            log.error(f"YOLO load error: {e}")
+            model = None
+    else:
+        log.warning(f"Model not found at {MODEL_PATH} — running raw stream only")
+
+    # ── Spatial dedup tracker ───────────────────────────────
+    tracks     = []   # [(cx,cy,bw,bh,last_t,defect_id), ...]
+    defect_seq = 1
+
+    # ── Outer reconnect loop ────────────────────────────────
+    while True:
         try:
-            from streamlit.runtime.scriptrunner import add_script_run_ctx
-            add_script_run_ctx(t)
-        except Exception: pass
-        t.start()
-        with _GLOBAL_LOCK:
-            _GLOBAL_DATA["thread"] = t
-    elif mode == "pi":
-        # Native browser streaming via <img> tag: zero lag, 30 FPS, no Python thread blocking
-        pass
+            log.info(f"Connecting to Pi stream → {PI_STREAM}")
+            req = urllib.request.Request(
+                PI_STREAM,
+                headers={"User-Agent": "BuildScan-Rover-AI/3.0",
+                         "Connection": "keep-alive"}
+            )
+            with urllib.request.urlopen(req, timeout=8.0) as stream:
+                with _lock:
+                    _state.connected = True
+                log.info("Pi stream connected — live inference active")
 
-def stop_stream():
-    with _GLOBAL_LOCK:
-        if not _GLOBAL_DATA["streaming"]: return
-        ev = _GLOBAL_DATA.get("stop_event")
-        if ev: ev.set()
-        t = _GLOBAL_DATA.get("thread")
-        _GLOBAL_DATA["streaming"]   = False
-        _GLOBAL_DATA["stream_mode"] = "idle"
-    if t and t.is_alive(): t.join(timeout=1.5)
+                buf         = b""
+                fps_t0      = time.time()
+                fps_frames  = 0
+                cur_fps     = 0.0
+
+                # ── Inner frame loop ────────────────────────
+                while True:
+                    chunk = stream.read(16384)
+                    if not chunk:
+                        break
+                    buf += chunk
+
+                    # Find JPEG boundaries
+                    soi = buf.find(b"\xff\xd8")
+                    eoi = buf.find(b"\xff\xd9")
+                    if soi == -1 or eoi == -1 or eoi <= soi:
+                        # Keep buffer bounded
+                        if len(buf) > 1_000_000:
+                            buf = buf[-500_000:]
+                        continue
+
+                    jpg_bytes = buf[soi: eoi + 2]
+                    buf       = buf[eoi + 2:]
+
+                    frame = cv2.imdecode(
+                        np.frombuffer(jpg_bytes, dtype=np.uint8),
+                        cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+
+                    h, w = frame.shape[:2]
+                    ann  = frame.copy()
+                    t0   = time.time()
+
+                    # ── YOLO GPU Inference ──────────────────
+                    cracks_now = 0
+                    confs      = []
+                    max_w_px   = 0.0
+                    max_l_px   = 0.0
+
+                    if model is not None:
+                        try:
+                            if _CUDA:
+                                with torch.no_grad():
+                                    results = model(
+                                        frame,
+                                        conf=CONF_THRESH,
+                                        device=_DEVICE,
+                                        verbose=False
+                                    )
+                            else:
+                                results = model(
+                                    frame,
+                                    conf=CONF_THRESH,
+                                    device=_DEVICE,
+                                    verbose=False
+                                )
+                            res = results[0]
+
+                            if res.boxes is not None and len(res.boxes):
+                                cracks_now = len(res.boxes)
+
+                                # Segmentation mask overlay (translucent red)
+                                if res.masks is not None:
+                                    overlay = ann.copy()
+                                    for mask_t in res.masks.data:
+                                        m = (mask_t.cpu().numpy() * 255).astype(np.uint8)
+                                        if m.shape != (h, w):
+                                            m = cv2.resize(m, (w, h),
+                                                           interpolation=cv2.INTER_NEAREST)
+                                        overlay[m > 128] = (30, 30, 220)  # red overlay
+                                    cv2.addWeighted(overlay, 0.40, ann, 0.60, 0, ann)
+
+                                # Per-crack bounding boxes & labels
+                                now_t = time.time()
+                                for i, box in enumerate(res.boxes):
+                                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                                    conf = float(box.conf[0])
+                                    bw   = max(1, x2 - x1)
+                                    bh   = max(1, y2 - y1)
+                                    blen = math.hypot(bw, bh)
+
+                                    # Accurate aperture via mask area / length
+                                    if res.masks is not None and i < len(res.masks.data):
+                                        m_arr    = res.masks.data[i].cpu().numpy()
+                                        m_area   = float(np.sum(m_arr > 0))
+                                        aperture = m_area / max(1.0, blen)
+                                    else:
+                                        aperture = min(bw, bh)
+
+                                    max_w_px = max(max_w_px, aperture)
+                                    max_l_px = max(max_l_px, blen)
+                                    confs.append(conf)
+
+                                    sev, act = _severity(aperture, 1)
+                                    col = ((0, 210, 80)    if sev == "LOW"
+                                           else (0, 140, 255) if sev == "MEDIUM"
+                                           else (30, 30, 245))
+
+                                    # Bounding box
+                                    cv2.rectangle(ann, (x1, y1), (x2, y2), col, 2)
+
+                                    # Label background + text
+                                    lbl = (f"CRACK {conf:.0%}  "
+                                           f"W:{aperture * PX_MM:.2f}mm  "
+                                           f"L:{blen * PX_MM:.1f}mm")
+                                    (tw, th), _ = cv2.getTextSize(
+                                        lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.46, 1)
+                                    cv2.rectangle(ann,
+                                                  (x1, max(0, y1 - 20)),
+                                                  (x1 + tw + 8, y1), col, -1)
+                                    cv2.putText(ann, lbl,
+                                                (x1 + 4, y1 - 5),
+                                                cv2.FONT_HERSHEY_SIMPLEX,
+                                                0.46, (255, 255, 255), 1,
+                                                cv2.LINE_AA)
+
+                                    # Spatial dedup: is this crack already tracked?
+                                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                                    matched_id = None
+                                    for idx, trk in enumerate(tracks):
+                                        tx, ty, _, _, last_t, tid = trk
+                                        if (math.hypot(cx - tx, cy - ty) < TRACK_RADIUS
+                                                and now_t - last_t < TRACK_TTL):
+                                            matched_id = tid
+                                            tracks[idx] = (cx, cy, bw, bh,
+                                                           now_t, tid)
+                                            break
+
+                                    if matched_id is None:
+                                        # Brand-new crack
+                                        new_id = f"DF-{defect_seq:04d}"
+                                        defect_seq += 1
+                                        tracks.append((cx, cy, bw, bh,
+                                                        now_t, new_id))
+                                        d = Defect(
+                                            defect_id = new_id,
+                                            timestamp = datetime.datetime.now()
+                                                            .strftime("%H:%M:%S"),
+                                            width_px  = round(aperture, 1),
+                                            width_mm  = round(aperture * PX_MM, 2),
+                                            length_mm = round(blen * PX_MM, 1),
+                                            conf      = round(conf * 100, 1),
+                                            severity  = sev,
+                                            action    = act,
+                                            bbox      = (x1, y1, x2, y2),
+                                        )
+                                        with _lock:
+                                            _state.registry.append(d)
+                                            _state.total_defects += 1
+
+                        except torch.cuda.OutOfMemoryError:
+                            log.error("CUDA OOM — clearing cache and retrying")
+                            torch.cuda.empty_cache()
+                            time.sleep(1.0)
+                            continue
+                        except Exception as infer_err:
+                            log.warning(f"Inference error: {infer_err}")
+
+                    # Clean stale tracks
+                    tracks = [t for t in tracks
+                              if (time.time() - t[4]) < TRACK_TTL]
+
+                    # ── FPS counter ─────────────────────────
+                    fps_frames += 1
+                    elapsed = time.time() - fps_t0
+                    if elapsed >= 1.0:
+                        cur_fps    = fps_frames / elapsed
+                        fps_frames = 0
+                        fps_t0     = time.time()
+
+                    # ── HUD top banner ──────────────────────
+                    sev_g, act_g = _severity(max_w_px, cracks_now)
+                    with _lock:
+                        total = _state.total_defects
+                    ov = ann.copy()
+                    cv2.rectangle(ov, (0, 0), (w, 34), (8, 14, 26), -1)
+                    cv2.addWeighted(ov, 0.82, ann, 0.18, 0, ann)
+                    ts = datetime.datetime.now().strftime("%H:%M:%S")
+                    hud = (f"BUILDSCAN ROVER AI  |  {ts}  |  "
+                           f"{GPU_NAME[:20]}  |  {cur_fps:.1f} FPS  |  "
+                           f"Live Cracks: {cracks_now}  |  Total Logged: {total}")
+                    cv2.putText(ann, hud, (10, 23),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.44,
+                                (0, 215, 255), 1, cv2.LINE_AA)
+
+                    # ── HUD bottom status bar ───────────────
+                    health = max(10.0, 100.0 -
+                                 (cracks_now * 12.0 + max_w_px * PX_MM * 20.0))
+                    bot_ov = ann.copy()
+                    cv2.rectangle(bot_ov, (0, h - 24), (w, h), (8, 14, 26), -1)
+                    cv2.addWeighted(bot_ov, 0.82, ann, 0.18, 0, ann)
+                    scol = ((30, 220, 80)    if sev_g in ("NONE", "LOW")
+                            else (0, 140, 255) if sev_g == "MEDIUM"
+                            else (30, 30, 245))
+                    bot = (f"HEALTH: {health:.1f}%  |  "
+                           f"SEVERITY: {sev_g}  |  {act_g[:65]}")
+                    cv2.putText(ann, bot, (10, h - 7),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                                scol, 1, cv2.LINE_AA)
+
+                    # ── Encode & store ──────────────────────
+                    _, enc = cv2.imencode(
+                        ".jpg", ann,
+                        [cv2.IMWRITE_JPEG_QUALITY, 88])
+                    enc_b = enc.tobytes()
+
+                    with _lock:
+                        _state.last_frame   = ann
+                        _state.last_jpeg    = enc_b
+                        _state.cracks_now   = cracks_now
+                        if confs:
+                            _state.avg_conf = sum(confs) / len(confs) * 100
+                        # max_width_mm / max_len_mm only ever increase (peak values)
+                        if max_w_px * PX_MM > _state.max_width_mm:
+                            _state.max_width_mm = max_w_px * PX_MM
+                        if max_l_px * PX_MM > _state.max_len_mm:
+                            _state.max_len_mm = max_l_px * PX_MM
+                        _state.severity     = sev_g
+                        _state.health_idx   = round(health, 1)
+                        _state.action       = act_g
+                        if cur_fps > 0:
+                            _state.fps = cur_fps
+
+        except Exception as conn_err:
+            with _lock:
+                _state.connected = False
+            log.warning(f"Pi stream disconnected: {conn_err} — retrying in 3 s")
+            time.sleep(3.0)
 
 
-# ── PDF ────────────────────────────────────────────────────
-def export_pdf(snap):
+# ── Start Services (called once per process) ─────────────────
+def _ensure_services():
+    if getattr(sys, "_buildscan_svc_started", False):
+        return
+    sys._buildscan_svc_started = True
+    threading.Thread(target=_run_mjpeg_server,  daemon=True, name="mjpeg-srv").start()
+    threading.Thread(target=_run_inference,     daemon=True, name="yolo-gpu").start()
+    log.info("BuildScan background services started (MJPEG server + GPU inference worker)")
+
+
+# ════════════════════════════════════════════════════════════
+#   PDF AUDIT GENERATOR
+# ════════════════════════════════════════════════════════════
+def _make_pdf(st_copy: EngineState) -> bytes:
+    if not PDF_OK:
+        return json.dumps({
+            "timestamp":      datetime.datetime.now().isoformat(),
+            "total_defects":  st_copy.total_defects,
+            "severity":       st_copy.severity,
+            "health_index":   st_copy.health_idx,
+        }, indent=2).encode()
+
     buf = io.BytesIO()
-    if not REPORTLAB_AVAILABLE:
-        import json
-        return json.dumps({"timestamp":snap.timestamp.isoformat() if snap.timestamp else "",
-                           "cracks":snap.cracks_detected,"confidence":round(snap.average_confidence,2),
-                           "max_width_px":round(snap.maximum_width,1),"severity":snap.severity,
-                           "recommendation":snap.recommendation},indent=2).encode()
-    ann_path = ""
-    if snap.annotated_frame is not None:
-        tmp = tempfile.NamedTemporaryFile(delete=False,suffix=".jpg",prefix="bscan_")
-        cv2.imwrite(tmp.name, snap.annotated_frame); ann_path=tmp.name
-    c = rl_canvas.Canvas(buf,pagesize=A4); pw,ph=A4
-    BL=HexColor("#2563eb"); CY=HexColor("#06b6d4"); OR=HexColor("#ea580c")
-    RD=HexColor("#dc2626"); PU=HexColor("#7c3aed"); AC=HexColor("#0a0f1e")
-    GR=HexColor("#16a34a"); BG=HexColor("#f0f4f8")
-    SC={"NONE":HexColor("#6b7280"),"LOW":GR,"MEDIUM":OR,"HIGH":RD}
-    c.setFillColor(BG);  c.rect(0,0,pw,ph,fill=1,stroke=0)
-    c.setFillColor(AC);  c.rect(0,ph-90,pw,90,fill=1,stroke=0)
-    c.setFillColor(CY);  c.rect(0,ph-92,pw,4,fill=1,stroke=0)
-    c.setFillColor(white); c.setFont("Helvetica-Bold",22)
-    c.drawString(30,ph-48,"BuildScan Rover - Inspection Report")
-    c.setFont("Helvetica",10)
-    ts_s = snap.timestamp.strftime("%d %b %Y  %I:%M %p") if snap.timestamp else ""
-    c.drawString(30,ph-68,ts_s)
-    iid = str(uuid.uuid4())[:8].upper()
-    c.setFont("Helvetica-Bold",9); c.drawRightString(pw-20,ph-48,f"ID: {iid}")
-    c.setFont("Helvetica",8);      c.drawRightString(pw-20,ph-62,f"Pi: {PI_IP} | YOLO26n-seg")
-    sc = SC.get(snap.severity,RD)
-    c.setFillColor(sc); c.roundRect(pw-165,ph-148,140,40,10,fill=1,stroke=0)
-    c.setFillColor(white); c.setFont("Helvetica-Bold",17)
-    c.drawCentredString(pw-95,ph-133,snap.severity)
-    c.setFillColor(HexColor("#111827")); c.setFont("Helvetica-Bold",11)
-    c.drawString(30,ph-118,"Project: BUILDScan Rover - AI Structural Health Inspection")
-    c.setFont("Helvetica",9); c.setFillColor(HexColor("#374151"))
-    c.drawString(30,ph-134,f"Confidence: 30% | Resolution: 1920x1080 | Report: {iid}")
-    def pc(cx,cy,color,title,value,cw=130,ch=52):
-        c.setFillColor(color); c.roundRect(cx,cy,cw,ch,8,fill=1,stroke=0)
-        c.setFillColor(white); c.setFont("Helvetica-Bold",9); c.drawString(cx+8,cy+34,title)
-        c.setFont("Helvetica-Bold",14); c.drawString(cx+8,cy+12,str(value))
-    cy1=ph-215
-    pc(30,cy1,BL,"Cracks",str(snap.cracks_detected))
-    pc(175,cy1,OR,"Confidence",f"{snap.average_confidence:.1f}%")
-    pc(320,cy1,RD,"Max Width",f"{snap.maximum_width:.0f}px")
-    pc(465,cy1,PU,"Length",f"{snap.total_length:.0f}px")
-    cy2=cy1-75
-    pc(30,cy2,GR,"Severity",snap.severity)
-    recs=(snap.recommendation[:28]+"..." if len(snap.recommendation)>28 else snap.recommendation)
-    pc(175,cy2,AC,"Repair Action",recs,cw=320)
-    img_y=cy2-235
-    if ann_path and os.path.exists(ann_path):
-        c.setFillColor(HexColor("#111827")); c.setFont("Helvetica-Bold",10)
-        c.drawString(30,img_y+222,"Annotated Detection Frame (YOLO26n-seg)")
-        try: c.drawImage(ImageReader(ann_path),30,img_y,width=pw-60,height=210,preserveAspectRatio=True)
-        except: pass
-    ry=img_y-60
-    c.setFillColor(sc); c.roundRect(30,ry,pw-60,44,8,fill=1,stroke=0)
-    c.setFillColor(white); c.setFont("Helvetica-Bold",11)
-    c.drawString(42,ry+28,"Engineering Recommendation:")
-    c.setFont("Helvetica",10); c.drawString(42,ry+10,snap.recommendation)
-    c.setStrokeColor(CY); c.setLineWidth(1.5); c.line(30,50,pw-30,50)
-    c.setFillColor(AC); c.setFont("Helvetica-Oblique",8)
-    c.drawString(30,34,"Generated by BuildScan Rover - AI Structural Health Inspection System")
-    c.drawRightString(pw-30,34,f"Report ID: {iid}")
-    c.save(); buf.seek(0); return buf.read()
+    tmp = None
+    if st_copy.last_frame is not None:
+        try:
+            f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg",
+                                            prefix="bscan_audit_")
+            cv2.imwrite(f.name, st_copy.last_frame)
+            tmp = f.name
+        except Exception:
+            pass
+
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(buf, pagesize=letter,
+                            rightMargin=36, leftMargin=36,
+                            topMargin=36, bottomMargin=36)
+    story = []
+
+    title_s = ParagraphStyle("T", parent=styles["Heading1"],
+                              fontSize=20, fontName="Helvetica-Bold",
+                              textColor=colors.HexColor("#0f172a"))
+    sub_s   = ParagraphStyle("S", parent=styles["Normal"],
+                              fontSize=9, textColor=colors.HexColor("#64748b"))
+    h2_s    = ParagraphStyle("H2", parent=styles["Heading2"],
+                              fontSize=13, fontName="Helvetica-Bold",
+                              textColor=colors.HexColor("#1e3a8a"),
+                              spaceBefore=10, spaceAfter=4)
+
+    now_s   = datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
+    cert_id = f"BS-{datetime.datetime.now().strftime('%Y%m%d')}-{random.randint(100,999)}"
+
+    story.append(Paragraph(
+        "BUILDSCAN ROVER AI  ·  STRUCTURAL HEALTH AUDIT", title_s))
+    story.append(Paragraph(
+        f"Audit ID: {cert_id}  ·  Generated: {now_s}  ·  "
+        f"Camera: {PI_IP}:{PI_PORT}  ·  Model: YOLO26n-seg  ·  GPU: {GPU_NAME}",
+        sub_s))
+    story.append(Spacer(1, 6))
+    story.append(HRFlowable(width="100%", thickness=1.5,
+                             color=colors.HexColor("#2563eb"),
+                             spaceBefore=2, spaceAfter=12))
+
+    sev_col = {"LOW": "#16a34a", "MEDIUM": "#ea580c",
+               "HIGH": "#dc2626"}.get(st_copy.severity, "#334155")
+    metrics = [
+        ["METRIC", "VALUE", "STANDARD", "STATUS"],
+        ["Cumulative Defects",  str(st_copy.total_defects),
+         "ACI 224R-01", "LOGGED"],
+        ["Max Crack Aperture",
+         f"{st_copy.max_width_mm:.2f} mm",
+         "< 0.30 mm hairline / ≥ 0.55 mm critical",
+         st_copy.severity],
+        ["Max Crack Length",   f"{st_copy.max_len_mm:.1f} mm",
+         "Monocular calibrated", "CALC"],
+        ["Structural Health",  f"{st_copy.health_idx:.1f} %",
+         "100 % = undamaged", "EVAL"],
+        ["GPU Inference",      GPU_NAME, f"YOLO26n-seg · {MODEL_PATH.name}", "OK"],
+    ]
+    tbl = Table(metrics, colWidths=[2.2*inch, 2.0*inch, 2.2*inch, 0.9*inch])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1e3a8a")),
+        ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
+        ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE",   (0,0), (-1,0), 8),
+        ("GRID",       (0,0), (-1,-1), 0.5, colors.HexColor("#cbd5e1")),
+        ("FONTSIZE",   (0,1), (-1,-1), 7.5),
+        ("TEXTCOLOR",  (3,2), (3,2), colors.HexColor(sev_col)),
+        ("FONTNAME",   (3,2), (3,2), "Helvetica-Bold"),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 10))
+
+    if tmp:
+        story.append(Paragraph(
+            "LIVE INSPECTION FRAME  ·  YOLO26n-seg CRACK SEGMENTATION", h2_s))
+        try:
+            story.append(RLImage(tmp, width=6.8*inch, height=3.8*inch))
+        except Exception:
+            pass
+        story.append(Spacer(1, 10))
+
+    if st_copy.registry:
+        story.append(Paragraph(
+            "CERTIFIED DEFECT REGISTRY  ·  REMEDIATION PLAN", h2_s))
+        rows = [["ID", "TIME", "APERTURE", "LENGTH", "CONF", "SEV", "ACTION"]]
+        for d in st_copy.registry[-12:]:
+            rows.append([d.defect_id, d.timestamp,
+                         f"{d.width_mm:.2f} mm", f"{d.length_mm:.1f} mm",
+                         f"{d.conf:.0f}%", d.severity,
+                         d.action[:42] + "…"])
+        rt = Table(rows,
+                   colWidths=[0.8*inch, 0.8*inch, 0.9*inch,
+                               0.9*inch, 0.5*inch, 0.6*inch, 3.0*inch])
+        rt.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0f172a")),
+            ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
+            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",   (0,0), (-1,0), 7.5),
+            ("GRID",       (0,0), (-1,-1), 0.5, colors.HexColor("#cbd5e1")),
+            ("FONTSIZE",   (0,1), (-1,-1), 7),
+        ]))
+        story.append(rt)
+
+    doc.build(story)
+    if tmp:
+        try: os.remove(tmp)
+        except Exception: pass
+    return buf.getvalue()
 
 
-def bgr2pil(bgr):
-    return PILImage.fromarray(cv2.cvtColor(bgr,cv2.COLOR_BGR2RGB))
+# ════════════════════════════════════════════════════════════
+#   CSS
+# ════════════════════════════════════════════════════════════
+_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+html,body,[class*="css"]{font-family:'Inter',-apple-system,sans-serif!important;color:#f1f5f9;background:#050b14!important;}
+.stApp{background:radial-gradient(circle at 50% 0%,#0d1e3a 0%,#060c18 55%,#030609 100%)!important;}
+header[data-testid="stHeader"]{background:transparent!important;}
+.block-container{padding-top:.8rem!important;padding-bottom:2rem!important;max-width:1440px!important;}
 
-def sev_cls(s):
-    return {"NONE":"sev-none","LOW":"sev-low","MEDIUM":"sev-med","HIGH":"sev-high"}.get(s,"sev-none")
+/* HEADER */
+.bsh{display:flex;align-items:center;justify-content:space-between;
+     background:rgba(13,24,48,.78);border:1px solid rgba(6,182,212,.3);
+     backdrop-filter:blur(16px);border-radius:16px;padding:13px 22px;
+     margin-bottom:12px;box-shadow:0 8px 32px rgba(0,0,0,.45);}
+.bsh-ico{font-size:2.1rem;margin-right:13px;filter:drop-shadow(0 0 10px rgba(6,182,212,.6));}
+.bsh-title{font-size:1.5rem;font-weight:900;letter-spacing:-.4px;margin:0;
+           background:linear-gradient(135deg,#38bdf8,#818cf8);
+           -webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.bsh-sub{font-size:.78rem;color:#94a3b8;font-weight:500;margin-top:2px;}
+.bsh-right{display:flex;align-items:center;gap:10px;}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:20px;
+      font-size:.73rem;font-weight:700;padding:5px 13px;}
+.p-gpu{background:rgba(14,165,233,.15);border:1px solid #0284c7;color:#38bdf8;}
+.p-live{background:rgba(34,197,94,.15);border:1px solid #22c55e;color:#4ade80;}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;animation:pdot 1.8s infinite;}
+.d-g{background:#22c55e;box-shadow:0 0 8px #22c55e;}
+.d-c{background:#06b6d4;box-shadow:0 0 8px #06b6d4;}
+
+/* STATUS BAR */
+.sbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+      background:rgba(10,18,36,.65);border:1px solid rgba(255,255,255,.07);
+      border-radius:11px;padding:8px 15px;margin-bottom:14px;
+      font-size:.76rem;color:#cbd5e1;}
+.si{display:flex;align-items:center;gap:5px;font-weight:600;margin-right:12px;}
+
+/* VIDEO BOX */
+.vbox{background:#040811;border:1.5px solid rgba(6,182,212,.45);border-radius:14px;
+      overflow:hidden;position:relative;box-shadow:0 10px 40px rgba(0,0,0,.6);}
+.vbadge{position:absolute;top:10px;left:12px;z-index:10;
+        background:rgba(220,38,38,.88);backdrop-filter:blur(6px);color:#fff;
+        font-size:.7rem;font-weight:800;letter-spacing:.7px;padding:3px 10px;
+        border-radius:6px;box-shadow:0 0 12px rgba(220,38,38,.55);}
+.vstatus{font-size:.72rem;color:#94a3b8;margin-top:5px;padding:0 4px;}
+
+/* METRIC CARDS */
+.mc{border-radius:13px;padding:13px 16px;min-height:80px;display:flex;
+    flex-direction:column;justify-content:space-between;margin-bottom:9px;
+    transition:transform .2s,box-shadow .2s;}
+.mc:hover{transform:translateY(-2px);}
+.ml{font-size:.67rem;font-weight:700;letter-spacing:.9px;text-transform:uppercase;opacity:.88;}
+.mv{font-size:1.6rem;font-weight:800;letter-spacing:-.5px;line-height:1;margin-top:5px;}
+.mv.sm{font-size:.88rem;}
+.ms{font-size:.7rem;opacity:.8;font-weight:500;margin-top:3px;}
+.mc-bl{background:linear-gradient(135deg,#1e3a8a,#2563eb);box-shadow:0 4px 18px rgba(37,99,235,.3);}
+.mc-cy{background:linear-gradient(135deg,#164e63,#0891b2);box-shadow:0 4px 18px rgba(6,182,212,.3);}
+.mc-or{background:linear-gradient(135deg,#7c2d12,#ea580c);box-shadow:0 4px 18px rgba(234,88,12,.3);}
+.mc-rd{background:linear-gradient(135deg,#7f1d1d,#dc2626);box-shadow:0 4px 18px rgba(220,38,38,.3);}
+.mc-pu{background:linear-gradient(135deg,#4c1d95,#7c3aed);box-shadow:0 4px 18px rgba(124,58,237,.3);}
+.mc-gr{background:linear-gradient(135deg,#14532d,#16a34a);box-shadow:0 4px 18px rgba(22,163,74,.3);}
+.sev-none{background:linear-gradient(135deg,#1e293b,#334155);}
+.sev-low{background:linear-gradient(135deg,#14532d,#16a34a);}
+.sev-med{background:linear-gradient(135deg,#7c2d12,#ea580c);}
+.sev-high{background:linear-gradient(135deg,#7f1d1d,#dc2626);animation:pulse 2s infinite;}
+
+/* REGISTRY TABLE */
+.reg{background:rgba(13,22,44,.7);border:1px solid rgba(6,182,212,.2);
+     border-radius:12px;padding:14px;margin-top:14px;}
+.reg-h{font-size:.87rem;font-weight:700;color:#38bdf8;margin-bottom:8px;}
+.reg-empty{text-align:center;padding:22px;color:#64748b;font-size:.83rem;}
+table.rt{width:100%;border-collapse:collapse;font-size:.74rem;text-align:left;}
+table.rt th{background:rgba(30,41,59,.8);color:#94a3b8;padding:6px 9px;font-weight:600;}
+table.rt td{padding:6px 9px;border-bottom:1px solid rgba(51,65,85,.4);color:#cbd5e1;}
+.sp{padding:2px 8px;border-radius:10px;font-weight:700;font-size:.67rem;}
+.sp-h{background:rgba(220,38,38,.25);color:#f87171;border:1px solid #ef4444;}
+.sp-m{background:rgba(234,88,12,.25);color:#fb923c;border:1px solid #f97316;}
+.sp-l{background:rgba(22,163,74,.25);color:#4ade80;border:1px solid #22c55e;}
+
+div[data-testid="stDownloadButton"]>button{
+  background:linear-gradient(135deg,#1e3a8a,#2563eb)!important;color:#fff!important;
+  border:none!important;border-radius:12px!important;font-weight:700!important;
+  box-shadow:0 4px 20px rgba(37,99,235,.4)!important;width:100%!important;}
+div[data-testid="stDownloadButton"]>button:hover{
+  transform:translateY(-2px)!important;box-shadow:0 8px 30px rgba(37,99,235,.6)!important;}
+
+@keyframes pdot{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.5;transform:scale(.85);}}
+@keyframes pulse{0%,100%{box-shadow:0 4px 18px rgba(220,38,38,.4);}
+                 50%{box-shadow:0 4px 34px rgba(220,38,38,.95);}}
+</style>
+"""
+
+# ════════════════════════════════════════════════════════════
+#   HELPERS
+# ════════════════════════════════════════════════════════════
+def _card(ico, lbl, val, cls, sub="", sm=False):
+    vc  = "mv sm" if sm else "mv"
+    s   = f'<div class="ms">{sub}</div>' if sub else ""
+    return (f'<div class="mc {cls}">'
+            f'  <div class="ml">{ico} {lbl}</div>'
+            f'  <div><div class="{vc}">{val}</div>{s}</div>'
+            f'</div>')
 
 
-_CSS = """<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap');
-html,body,[class*="css"]{font-family:'Inter',sans-serif!important;background:#070b18!important;color:#e2e8f0!important;}
-.stApp{background:linear-gradient(135deg,#070b18 0%,#0d1628 50%,#070b18 100%)!important;}
-.bs-header{background:linear-gradient(90deg,rgba(13,22,44,.95),rgba(6,182,212,.08));border:1px solid rgba(6,182,212,.25);border-radius:16px;padding:18px 24px;display:flex;align-items:center;gap:16px;margin-bottom:20px;backdrop-filter:blur(20px);box-shadow:0 4px 32px rgba(6,182,212,.08);}
-.bs-icon{font-size:2.6rem;filter:drop-shadow(0 0 12px rgba(6,182,212,.6));}
-.bs-title{font-size:1.55rem;font-weight:900;color:#fff;letter-spacing:-.5px;margin:0;}
-.bs-sub{font-size:.78rem;color:#94a3b8;margin:0;}
-.bs-right{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:4px;}
-.pill{display:flex;align-items:center;gap:7px;padding:6px 14px;border-radius:50px;font-size:.78rem;font-weight:700;letter-spacing:.5px;}
-.p-stream{background:rgba(6,182,212,.2);border:1px solid #06b6d4;color:#67e8f9;}
-.p-demo{background:rgba(234,88,12,.2);border:1px solid #ea580c;color:#fb923c;}
-.p-idle{background:rgba(100,116,139,.2);border:1px solid #475569;color:#94a3b8;}
-.dot{width:8px;height:8px;border-radius:50%;}
-.d-cyan{background:#67e8f9;box-shadow:0 0 8px #67e8f9;animation:pdot 1.5s infinite;}
-.d-ora{background:#fb923c;box-shadow:0 0 8px #fb923c;animation:pdot 1s infinite;}
-.d-gray{background:#94a3b8;}
-.ip-tag{font-family:'JetBrains Mono',monospace;font-size:.72rem;color:#64748b;}
-.ibar{display:flex;gap:18px;flex-wrap:wrap;align-items:center;background:rgba(13,22,44,.7);border:1px solid rgba(6,182,212,.15);border-radius:10px;padding:8px 16px;font-size:.75rem;color:#64748b;font-family:'JetBrains Mono',monospace;margin-bottom:16px;}
-.ii{display:flex;align-items:center;gap:6px;}
-.idot{width:6px;height:6px;border-radius:50%;}
-.id-g{background:#4ade80;box-shadow:0 0 6px #4ade80;}
-.id-c{background:#67e8f9;}
-.id-gr{background:#475569;}
-div[data-testid="stButton"]>button{border-radius:10px!important;font-weight:700!important;font-size:.85rem!important;transition:all .2s!important;height:44px!important;}
-div[data-testid="stButton"]>button[kind="primary"]{background:linear-gradient(135deg,#0284c7,#06b6d4)!important;color:#fff!important;box-shadow:0 4px 20px rgba(6,182,212,.35)!important;}
-div[data-testid="stButton"]>button[kind="primary"]:hover{transform:translateY(-2px)!important;box-shadow:0 8px 28px rgba(6,182,212,.55)!important;}
-div[data-testid="stButton"]>button[kind="secondary"]{background:rgba(30,42,74,.9)!important;color:#cbd5e1!important;border:1px solid rgba(100,116,139,.4)!important;}
-div[data-testid="stButton"]>button[kind="secondary"]:hover{background:rgba(51,65,105,.9)!important;border-color:rgba(6,182,212,.5)!important;color:#fff!important;}
-.vout{background:rgba(10,15,30,.9);border:1px solid rgba(6,182,212,.2);border-radius:16px;padding:8px;box-shadow:0 8px 40px rgba(0,0,0,.5);}
-.vbadge{display:inline-flex;align-items:center;gap:6px;background:rgba(220,38,38,.85);color:#fff;font-size:.65rem;font-weight:700;letter-spacing:1.5px;padding:3px 10px;border-radius:4px;margin-bottom:6px;}
-.nofeed{background:rgba(10,15,30,.9);border:2px dashed rgba(6,182,212,.2);border-radius:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:340px;text-align:center;}
-.nfi{font-size:3.5rem;margin-bottom:12px;opacity:.5;}
-.nft{font-size:1rem;font-weight:600;color:#64748b;}
-.nfs{font-size:.8rem;margin-top:6px;color:#475569;}
-.vts{font-family:'JetBrains Mono',monospace;font-size:.72rem;color:#475569;text-align:right;margin-top:6px;}
-.mc{border-radius:14px;padding:16px 18px;min-height:90px;display:flex;flex-direction:column;justify-content:space-between;margin-bottom:12px;transition:transform .2s,box-shadow .2s;cursor:default;}
-.mc:hover{transform:translateY(-3px);}
-.ml{font-size:.7rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;opacity:.85;}
-.mv{font-size:1.7rem;font-weight:800;letter-spacing:-1px;line-height:1;margin-top:8px;}
-.mv.sm{font-size:1rem;}
-.mc-bl{background:linear-gradient(135deg,#1e3a8a,#2563eb);box-shadow:0 4px 20px rgba(37,99,235,.3);}
-.mc-cy{background:linear-gradient(135deg,#164e63,#0891b2);box-shadow:0 4px 20px rgba(6,182,212,.3);}
-.mc-or{background:linear-gradient(135deg,#7c2d12,#ea580c);box-shadow:0 4px 20px rgba(234,88,12,.3);}
-.mc-rd{background:linear-gradient(135deg,#7f1d1d,#dc2626);box-shadow:0 4px 20px rgba(220,38,38,.3);}
-.mc-gr{background:linear-gradient(135deg,#14532d,#16a34a);box-shadow:0 4px 20px rgba(22,163,74,.3);}
-.mc-pu{background:linear-gradient(135deg,#4c1d95,#7c3aed);box-shadow:0 4px 20px rgba(124,58,237,.3);}
-.sev-none{background:linear-gradient(135deg,#1e293b,#334155);box-shadow:0 4px 20px rgba(51,65,85,.4);}
-.sev-low{background:linear-gradient(135deg,#14532d,#16a34a);box-shadow:0 4px 20px rgba(22,163,74,.4);}
-.sev-med{background:linear-gradient(135deg,#7c2d12,#ea580c);box-shadow:0 4px 20px rgba(234,88,12,.4);}
-.sev-high{background:linear-gradient(135deg,#7f1d1d,#dc2626);box-shadow:0 4px 20px rgba(220,38,38,.5);animation:pcrd 2s infinite;}
-div[data-testid="stDownloadButton"]>button{background:linear-gradient(135deg,#1e3a8a,#2563eb)!important;color:#fff!important;border:none!important;border-radius:12px!important;font-weight:700!important;box-shadow:0 4px 20px rgba(37,99,235,.4)!important;width:100%!important;}
-div[data-testid="stDownloadButton"]>button:hover{transform:translateY(-2px)!important;box-shadow:0 8px 30px rgba(37,99,235,.6)!important;}
-hr{border-color:rgba(6,182,212,.15)!important;margin:16px 0!important;}
-.stExpander{background:rgba(13,22,44,.7)!important;border:1px solid rgba(6,182,212,.2)!important;border-radius:12px!important;}
-label{color:#94a3b8!important;font-size:.78rem!important;font-weight:600!important;}
-@keyframes pdot{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.6;transform:scale(.85);}}
-@keyframes pcrd{0%,100%{box-shadow:0 4px 20px rgba(220,38,38,.5);}50%{box-shadow:0 4px 36px rgba(220,38,38,.9);}}
-</style>"""
+def _render_metrics(s: EngineState):
+    # Use live values when detecting; fall back to best-ever from registry
+    ever_detected = s.total_defects > 0 or len(s.registry) > 0
+
+    cf = f"{s.avg_conf:.1f}%" if s.cracks_now > 0 else (
+         f"{s.registry[-1].conf:.1f}% (last)" if s.registry else "--")
+    sw = (f"{s.max_width_mm:.2f} mm ({s.max_width_mm/PX_MM:.1f}px)" if s.cracks_now > 0
+          else (f"{s.registry[-1].width_mm:.2f} mm (last)" if s.registry else "--"))
+    sl = (f"{s.max_len_mm:.1f} mm" if s.cracks_now > 0
+          else (f"{s.registry[-1].length_mm:.1f} mm (last)" if s.registry else "--"))
+    sc = {"NONE":"sev-none","LOW":"sev-low",
+          "MEDIUM":"sev-med","HIGH":"sev-high"}.get(s.severity,"sev-none")
+    rd = "mc-rd" if s.total_defects > 0 else "mc-cy"
+
+    # Cracks in view — pulse red if active
+    cracks_cls = "mc-rd" if s.cracks_now > 0 else "mc-bl"
+    cracks_sub = (f"🔴 {s.cracks_now} crack(s) actively detected" if s.cracks_now > 0
+                  else "Live GPU inference running...")
+
+    fps_disp = f"{s.fps:.1f} FPS" if s.fps > 0 else "Warming up..."
+    action_disp = s.action if s.action else "System initialising..."
+
+    st.markdown(_card("🔍", "Cracks in Current View",
+                      str(s.cracks_now), cracks_cls, cracks_sub),
+                unsafe_allow_html=True)
+    st.markdown(_card("📊", "Total Defects Logged",
+                      str(s.total_defects), rd,
+                      f"{len(s.registry)} unique crack IDs registered"),
+                unsafe_allow_html=True)
+    st.markdown(_card("🎯", "Detection Confidence",
+                      cf, "mc-or",
+                      f"YOLO26n-seg  ·  {GPU_NAME[:22]}"),
+                unsafe_allow_html=True)
+    st.markdown(_card("↔", "Max Crack Aperture", sw, "mc-rd",
+                      f"1 px = {PX_MM} mm calibrated"),
+                unsafe_allow_html=True)
+    st.markdown(_card("📏", "Max Crack Length", sl, "mc-cy",
+                      "Monocular pixel geometry"), unsafe_allow_html=True)
+    st.markdown(_card("⚠️", "Structural Severity", s.severity, sc,
+                      f"Health Index: {s.health_idx:.1f}%"),
+                unsafe_allow_html=True)
+    st.markdown(_card("🛠️", "Civil Remediation Action",
+                      action_disp, "mc-pu", sm=True),
+                unsafe_allow_html=True)
+    st.markdown(_card("⚡", "Inference Speed",
+                      fps_disp, "mc-gr",
+                      f"GPU: {GPU_NAME[:22]}"),
+                unsafe_allow_html=True)
 
 
+# ════════════════════════════════════════════════════════════
+#   MAIN STREAMLIT APP
+# ════════════════════════════════════════════════════════════
 def main():
-    st.set_page_config(page_title="BuildScan Rover - AI Dashboard",
-                       page_icon="🏗️", layout="wide",
-                       initial_sidebar_state="collapsed")
+    st.set_page_config(
+        page_title="BuildScan Rover AI — Live Inspection",
+        page_icon="🏗️",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+
+    # ── Auto-refresh every 1.5 s — must be called early, before any widget ──
+    from streamlit_autorefresh import st_autorefresh
+    st_autorefresh(interval=1500, limit=None, key="live_refresh")
+
     try:    st.html(_CSS)
     except: st.markdown(_CSS, unsafe_allow_html=True)
 
-    with _GLOBAL_LOCK:
-        snap = _GLOBAL_DATA["snapshot"]
-        strm = _GLOBAL_DATA["streaming"]
-        mode = _GLOBAL_DATA["stream_mode"]
-        err  = _GLOBAL_DATA["stream_error"]
-    demo = (mode == "demo")
+    # Boot singleton services (safe to call on every rerun)
+    _ensure_services()
 
-    if strm and mode=="pi":     pc,dc,pt="p-stream","d-cyan","📡 Pi Camera Live"
-    elif strm and demo:         pc,dc,pt="p-demo","d-ora","🧪 Demo Mode"
-    elif strm:                  pc,dc,pt="p-stream","d-cyan","🎥 Webcam Live"
-    else:                       pc,dc,pt="p-idle","d-gray","● Standby"
+    # ── Snapshot latest state from GPU worker (called on EVERY rerun) ────
+    with _lock:
+        s = EngineState(
+            connected     = _state.connected,
+            cracks_now    = _state.cracks_now,
+            total_defects = _state.total_defects,
+            avg_conf      = _state.avg_conf,
+            max_width_mm  = _state.max_width_mm,
+            max_len_mm    = _state.max_len_mm,
+            severity      = _state.severity,
+            health_idx    = _state.health_idx,
+            action        = _state.action,
+            fps           = _state.fps,
+            last_frame    = _state.last_frame,
+            last_jpeg     = _state.last_jpeg,
+            registry      = list(_state.registry),
+        )
 
-    fps_t = f"{snap.fps:.1f} FPS" if snap.fps>0 else "-- FPS"
-    ts_t  = snap.timestamp.strftime("%H:%M:%S") if snap.timestamp else "--:--:--"
-
+    # ── HEADER ───────────────────────────────────────────────
+    conn_color = "#22c55e" if s.connected else "#ef4444"
+    conn_text  = "Pi Connected" if s.connected else "Pi Reconnecting…"
     st.markdown(f"""
-    <div class="bs-header">
-      <div class="bs-icon">🏗️</div>
-      <div><p class="bs-title">BuildScan Rover</p>
-        <p class="bs-sub">AI Structural Health Inspection &middot; YOLO26n-seg &middot; Distributed Architecture</p></div>
-      <div class="bs-right">
-        <div class="pill {pc}"><div class="dot {dc}"></div>{pt}</div>
-        <div class="ip-tag">Pi {PI_IP}:{PI_PORT} &nbsp;|&nbsp; {ts_t} &nbsp;|&nbsp; {fps_t}</div>
+    <div class="bsh">
+      <div style="display:flex;align-items:center;">
+        <div class="bsh-ico">🏗️</div>
+        <div>
+          <p class="bsh-title">BuildScan Rover AI &bull; Live Structural Inspection</p>
+          <p class="bsh-sub">
+            Real-Time Pi Camera Stream &bull; YOLO26n-seg Crack Segmentation
+            &bull; {GPU_NAME} GPU
+          </p>
+        </div>
       </div>
-    </div>""", unsafe_allow_html=True)
+      <div class="bsh-right">
+        <div class="pill p-gpu">
+          <div class="dot d-c"></div>GPU: {GPU_NAME[:20]}
+        </div>
+        <div class="pill p-live" style="border-color:{conn_color};color:{conn_color};">
+          <div class="dot" style="background:{conn_color};box-shadow:0 0 8px {conn_color};"></div>
+          {conn_text}
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    mok = YOLO_AVAILABLE and _MODEL_PATH.exists()
-    stx = err[:60] if err else ("Active" if strm else "Idle")
-    gm  = "id-g" if mok else "id-gr"
-    gp  = "id-g" if REPORTLAB_AVAILABLE else "id-gr"
-    gs  = "id-g" if strm and not err else "id-gr"
-
+    # ── STATUS BAR ───────────────────────────────────────────
     st.markdown(f"""
-    <div class="ibar">
-      <div class="ii"><div class="idot {gm}"></div>{"🟢" if mok else "🔴"} YOLO26n-seg {"Loaded" if mok else "Not Found"}</div>
-      <div class="ii"><div class="idot {gp}"></div>{"🟢" if REPORTLAB_AVAILABLE else "🟡"} PDF {"Ready" if REPORTLAB_AVAILABLE else "Missing"}</div>
-      <div class="ii"><div class="idot {gs}"></div>{"🟢" if strm and not err else "⚪"} Stream: {stx}</div>
-      <div class="ii"><div class="idot id-c"></div>🌐 {PI_STREAM_URL}</div>
-    </div>""", unsafe_allow_html=True)
+    <div class="sbar">
+      <div class="si">{'🟢' if s.connected else '🔴'} <b>Pi Stream:</b>
+            {PI_IP}:{PI_PORT}/image_raw</div>
+      <div class="si">⚡ <b>AI Engine:</b> YOLO26n-seg on {GPU_NAME}</div>
+      <div class="si">📍 <b>LiDAR:</b> Standby (Visual Monocular Active)</div>
+      <div class="si">🛡️ <b>E-Stop:</b> Armed (&lt; 20 cm)</div>
+      <div class="si">🔢 <b>Total Defects:</b> {s.total_defects}</div>
+      <div class="si">⏱️ <b>FPS:</b> {s.fps:.1f}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    b1,b2,b3,b4 = st.columns([2.5,1.8,1.8,1.5])
-    with b1:
-        is_pi = (strm and mode=="pi")
-        if st.button("📡  Pi Camera (Live)" if is_pi else "📡  Pi Camera",
-                     key="btn_pi", type="primary" if is_pi else "secondary",
-                     use_container_width=True):
-            start_stream("pi"); st.rerun()
-    with b2:
-        is_wc = (strm and mode=="webcam")
-        if st.button("▶  Local Webcam", key="btn_wc",
-                     type="primary" if is_wc else "secondary",
-                     use_container_width=True):
-            start_stream("webcam"); st.rerun()
-    with b3:
-        is_dm = (strm and mode=="demo")
-        if st.button("🧪  Demo Mode", key="btn_dm",
-                     type="primary" if is_dm else "secondary",
-                     use_container_width=True):
-            start_stream("demo"); st.rerun()
-    with b4:
-        if st.button("■  Stop", key="btn_st", type="secondary",
-                     disabled=not strm, use_container_width=True):
-            stop_stream(); st.rerun()
+    # ── MAIN LAYOUT: VIDEO  |  METRICS ───────────────────────
+    col_vid, col_met = st.columns([3.2, 1.8], gap="medium")
 
-    cv, cm = st.columns([3,2], gap="medium")
-    with cv:
-        if mode == "pi" and strm:
-            st.markdown(f'''
-            <div class="vout">
-              <div class="vbadge">🔴 RASPBERRY PI 4 &bull; LIVE STREAM</div>
-              <img src="{PI_STREAM_URL}" 
-                   style="width: 100%; border-radius: 12px; display: block; border: 1.5px solid rgba(6,182,212,0.5); background: #070d19; aspect-ratio: 4/3; object-fit: contain;" 
-                   alt="Raspberry Pi Camera Stream" />
-            </div>''', unsafe_allow_html=True)
-            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-            ac1, ac2 = st.columns([1.5, 1])
-            with ac1:
-                if st.button("📸  Scan & Inspect Frame (YOLO26n)", key="btn_pi_scan", type="primary", use_container_width=True):
-                    with st.spinner("Analyzing frame from Pi camera..."):
-                        ok, msg = inspect_pi_frame()
-                        if ok:
-                            st.session_state["show_ai_overlay"] = True
-                            st.rerun()
-                        else:
-                            st.warning(msg)
-            with ac2:
-                if snap.annotated_frame is not None:
-                    txt = "🙈 Hide AI Result" if st.session_state.get("show_ai_overlay") else "👁️ Show AI Result"
-                    if st.button(txt, key="btn_toggle_ov", use_container_width=True):
-                        st.session_state["show_ai_overlay"] = not st.session_state.get("show_ai_overlay", False)
-                        st.rerun()
+    with col_vid:
+        # Feed mode toggle
+        mode = st.radio(
+            "feed_mode",
+            ["🎯 AI-Annotated Stream (YOLO26n-seg GPU)",
+             "📹 Raw Pi 4 Camera Feed"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
 
-            if st.session_state.get("show_ai_overlay") and snap.annotated_frame is not None:
-                st.markdown('<div class="vout" style="margin-top:12px;"><div class="vbadge">🎯 AI CRACK DETECTION RESULT</div>', unsafe_allow_html=True)
-                st.image(bgr2pil(snap.annotated_frame), use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-        elif snap.annotated_frame is not None:
-            st.markdown('<div class="vout"><div class="vbadge">🔴 CRACK DETECTION LIVE</div>',
-                        unsafe_allow_html=True)
-            st.image(bgr2pil(snap.annotated_frame), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+        if "AI-Annotated" in mode:
+            src   = AI_STREAM
+            badge = "🔴 LIVE GPU AI STREAM &bull; YOLO26n-seg CRACK DETECTION"
+            note  = f"Annotated at localhost:{AI_PORT}  ·  Inference on {GPU_NAME}"
         else:
-            st.markdown("""<div class="nofeed"><div class="nfi">📡</div>
-              <div class="nft">No Feed Active</div>
-              <div class="nfs">Click <strong>📡 Connect Pi Camera</strong> to start streaming from the Raspberry Pi</div>
-            </div>""", unsafe_allow_html=True)
-        if snap.timestamp:
-            st.markdown(f'<div class="vts">Last frame: {snap.timestamp.strftime("%H:%M:%S.%f")[:-3]} | {fps_t}</div>',
-                        unsafe_allow_html=True)
+            src   = PI_STREAM
+            badge = "📹 RAW PI 4 CAMERA STREAM &bull; 30 FPS"
+            note  = f"Direct from {PI_IP}:{PI_PORT} (no AI overlay)"
 
-    with cm:
-        def card(ico,lbl,val,cls,sm=False):
-            vc = "mv sm" if sm else "mv"
-            return f'<div class="mc {cls}"><div class="ml">{ico} {lbl}</div><div class="{vc}">{val}</div></div>'
-        cf = f"{snap.average_confidence:.1f}%" if snap.cracks_detected else "--"
-        sl = f"{snap.total_length:.0f} px"     if snap.cracks_detected else "--"
-        sw = f"{snap.maximum_width:.0f} px"    if snap.cracks_detected else "--"
-        sc = sev_cls(snap.severity)
-        st.markdown(card("🔍","Cracks Detected",str(snap.cracks_detected),"mc-bl"),unsafe_allow_html=True)
-        st.markdown(card("🎯","Avg Confidence",cf,"mc-or"),unsafe_allow_html=True)
-        st.markdown(card("↔","Max Crack Width",sw,"mc-rd"),unsafe_allow_html=True)
-        st.markdown(card("📏","Total Length",sl,"mc-cy"),unsafe_allow_html=True)
-        st.markdown(card("⚠️","Severity",snap.severity,sc),unsafe_allow_html=True)
-        st.markdown(card("🛠","Recommendation",snap.recommendation,"mc-pu",sm=True),unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="vbox">
+          <div class="vbadge">{badge}</div>
+          <img src="{src}"
+               id="live-video-feed"
+               onerror="if(!this.dataset.retried){{this.dataset.retried=1;this.src='http://127.0.0.1:{AI_PORT}/video_feed';}}"
+               style="width:100%;display:block;aspect-ratio:4/3;
+                      object-fit:contain;border-radius:12px;background:#040811;"
+               alt="Live camera stream" />
+        </div>
+        <div class="vstatus">{note}</div>
+        """, unsafe_allow_html=True)
 
+        # Controls
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        b1, b2, b3 = st.columns([1.5, 1.5, 1.2])
+        with b1:
+            if st.button("🔄 Refresh Metrics", use_container_width=True,
+                         type="primary"):
+                st.rerun()
+        with b2:
+            if st.button("🧹 Reset Defect Count", use_container_width=True):
+                with _lock:
+                    _state.total_defects = 0
+                    _state.registry.clear()
+                st.rerun()
+        with b3:
+            if st.button("📄 Generate Audit PDF", use_container_width=True):
+                st.session_state["pdf_data"] = _make_pdf(s)
+                st.session_state["pdf_tag"]  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            if st.session_state.get("pdf_data"):
+                st.download_button(
+                    "📥 Download PDF",
+                    data=st.session_state["pdf_data"],
+                    file_name=f"BuildScan_Audit_{st.session_state.get('pdf_tag','report')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+
+    with col_met:
+        _render_metrics(s)
+
+    # ── DEFECT REGISTRY TABLE ────────────────────────────────
     st.markdown("---")
-    has = snap.cracks_detected>0 or snap.annotated_frame is not None
-    dc1,dc2 = st.columns([2,5])
-    with dc1:
-        if has:
-            try:
-                pdf = export_pdf(snap)
-                ext = "pdf" if pdf[:4]==b"%PDF" else "json"
-                tag = snap.timestamp.strftime("%Y%m%d_%H%M%S") if snap.timestamp else "export"
-                st.download_button("📥  Download Inspection Report (PDF)",pdf,
-                                   f"BuildScan_{tag}.{ext}","application/pdf",
-                                   key="btn_dl",use_container_width=True)
-            except Exception as e: st.warning(f"Export error: {e}")
-        else:
-            st.download_button("📥  Download Inspection Report (PDF)",b"",
-                               "BuildScan_no_data.pdf",disabled=True,
-                               key="btn_dld",use_container_width=True)
-    with dc2:
-        st.markdown(f"""<div style="font-size:.78rem;color:#475569;padding-top:8px;">
-          <b style="color:#64748b;">Model:</b> YOLO26n-seg v1.0.0 &nbsp;|&nbsp;
-          <b style="color:#64748b;">Threshold:</b> 30% &nbsp;|&nbsp;
-          <b style="color:#64748b;">Pi Stream:</b> {PI_STREAM_URL} &nbsp;|&nbsp;
-          <b style="color:#64748b;">Mode:</b> {mode.upper()}
-        </div>""", unsafe_allow_html=True)
+    st.markdown('<div class="reg"><div class="reg-h">'
+                '📋 REAL-TIME DEFECT REGISTRY &amp; STRUCTURAL ANOMALY LOG'
+                '</div>', unsafe_allow_html=True)
 
-    with st.expander("ℹ️  System Architecture & Hardware"):
-        st.markdown(f"""**BuildScan Rover** is a distributed AI structural inspection system.
+    if s.registry:
+        rows = ""
+        for d in reversed(s.registry[-10:]):
+            sc = ("sp-h" if d.severity == "HIGH"
+                  else "sp-m" if d.severity == "MEDIUM" else "sp-l")
+            rows += f"""
+            <tr>
+              <td><b>{d.defect_id}</b></td>
+              <td>{d.timestamp}</td>
+              <td>{d.width_mm:.2f} mm</td>
+              <td>{d.length_mm:.1f} mm</td>
+              <td>{d.conf:.0f}%</td>
+              <td><span class="sp {sc}">{d.severity}</span></td>
+              <td style="max-width:260px;word-wrap:break-word">{d.action}</td>
+            </tr>"""
+        st.markdown(f"""
+        <table class="rt">
+          <thead><tr>
+            <th>DEFECT ID</th><th>TIME</th><th>APERTURE</th>
+            <th>LENGTH</th><th>CONF</th><th>SEVERITY</th><th>REMEDIATION ACTION</th>
+          </tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div class="reg-empty">'
+            '🔍 No cracks detected yet.  '
+            'When the Pi camera detects a real structural crack, '
+            'YOLO26n-seg will segment it live, measure its aperture, '
+            'and log it here automatically.'
+            '</div>', unsafe_allow_html=True)
 
-| Component | Device | Role |
-|---|---|---|
-| Logitech Brio Camera | Raspberry Pi 4 | Source → `/image_raw` |
-| `v4l2_camera_node` | Raspberry Pi 4 | ROS 2 camera publisher |
-| `web_video_server` | Raspberry Pi 4 | MJPEG on port 8080 |
-| **YOLO26n-seg Inference** | **This Laptop** | Crack segmentation per frame |
-| **Streamlit Dashboard** | **This Laptop** | Operator UI + PDF |
-| ESP32 micro-ROS | ESP32 DevKit | Motor drive + Ultrasonic |
-| `safety_node` | Raspberry Pi 4 | E-Stop on obstacle < 20 cm |
-
-**Stream URL:** `{PI_STREAM_URL}`
-
-| Severity | Condition | Repair Action |
-|---|---|---|
-| 🟢 LOW | Width < 70 px | Surface filler and sealant |
-| 🟠 MEDIUM | Width < 150 px | Epoxy injection repair |
-| 🔴 HIGH | Width ≥ 150 px | Urgent structural inspection |
-""")
-
-    if strm and mode != "pi":
-        time.sleep(_REFRESH)
-        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
