@@ -194,20 +194,23 @@ def _make_demo_frame(tick: int) -> DetectionSnapshot:
 
 
 # ---------- Streaming threads ----------
-def _camera_loop(stop_event: threading.Event):
+def _camera_loop(stop_event: threading.Event, source):
     model = load_model()
-    cap   = cv2.VideoCapture(_CAM_IDX)
+    cap   = cv2.VideoCapture(source)
     if not cap.isOpened():
+        src_label = f"Pi stream ({source})" if isinstance(source, str) else f"camera {source}"
         st.session_state["stream_error"] = (
-            f"Cannot open camera {_CAM_IDX}. Try Demo Mode.")
+            f"Cannot connect to {src_label}. Check that the Pi camera node and web_video_server are running.")
+        st.session_state["streaming"] = False
         stop_event.set()
         return
     while not stop_event.is_set():
         ret, frame = cap.read()
         if not ret:
+            time.sleep(0.05)
             continue
         st.session_state["snapshot"] = analyze_frame(model, frame)
-        time.sleep(0.05)
+        time.sleep(0.04)
     cap.release()
 
 
@@ -219,18 +222,32 @@ def _demo_loop(stop_event: threading.Event):
         time.sleep(0.12)
 
 
-def start_stream(demo: bool = False):
+def start_stream(mode: str = "webcam", pi_ip: str = "10.120.68.129", pi_topic: str = "/camera/image_raw"):
     if st.session_state.get("streaming"):
         return
     ev = threading.Event()
+    is_demo = (mode == "demo")
     st.session_state.update({
         "stop_event": ev, "streaming": True,
-        "demo_mode": demo, "stream_error": None,
+        "stream_mode": mode,
+        "demo_mode": is_demo, "stream_error": None,
         "snapshot": DetectionSnapshot(),
     })
-    t = threading.Thread(
-        target=_demo_loop if demo else _camera_loop,
-        args=(ev,), daemon=True)
+    
+    if mode == "demo":
+        target = _demo_loop
+        args = (ev,)
+    elif mode == "pi":
+        # Connect to Raspberry Pi web_video_server stream
+        clean_topic = pi_topic if pi_topic.startswith("/") else f"/{pi_topic}"
+        stream_url = f"http://{pi_ip.strip()}:8080/stream?topic={clean_topic}"
+        target = _camera_loop
+        args = (ev, stream_url)
+    else: # local webcam
+        target = _camera_loop
+        args = (ev, _CAM_IDX)
+
+    t = threading.Thread(target=target, args=args, daemon=True)
     t.start()
     st.session_state["stream_thread"] = t
 
@@ -416,20 +433,24 @@ def main():
         st.markdown(_CSS, unsafe_allow_html=True)
 
     # Session defaults
-    for k, v in [("streaming", False), ("demo_mode", False),
+    for k, v in [("streaming", False), ("demo_mode", False), ("stream_mode", "idle"),
                   ("snapshot", DetectionSnapshot()), ("stop_event", None),
-                  ("stream_thread", None), ("stream_error", None)]:
+                  ("stream_thread", None), ("stream_error", None),
+                  ("pi_ip", "10.120.68.129"), ("pi_topic", "/image_raw")]:
         st.session_state.setdefault(k, v)
 
-    snap:      DetectionSnapshot = st.session_state["snapshot"]
-    is_demo:   bool              = st.session_state.get("demo_mode", False)
-    streaming: bool              = st.session_state.get("streaming", False)
+    snap:        DetectionSnapshot = st.session_state["snapshot"]
+    is_demo:     bool              = st.session_state.get("demo_mode", False)
+    streaming:   bool              = st.session_state.get("streaming", False)
+    stream_mode: str               = st.session_state.get("stream_mode", "idle")
 
     # Header
-    if streaming and is_demo:
+    if streaming and stream_mode == "pi":
+        ml, mc = "Raspberry Pi Stream", "bs-mode-cam"
+    elif streaming and is_demo:
         ml, mc = "Demo Mode", "bs-mode-demo"
     elif streaming:
-        ml, mc = "Camera Live", "bs-mode-cam"
+        ml, mc = "Webcam Live", "bs-mode-cam"
     else:
         ml, mc = "Idle", "bs-mode-idle"
 
@@ -437,7 +458,7 @@ def main():
         f'<div class="bs-header">'
         f'<div class="bs-header-icon">🏗️</div>'
         f'<div><p class="bs-header-title">BuildScan Rover AI Dashboard</p>'
-        f'<p class="bs-header-sub">AI-Assisted Structural Crack Detection &nbsp;•&nbsp; YOLO26n-seg &nbsp;•&nbsp; Standalone Demo</p></div>'
+        f'<p class="bs-header-sub">AI-Assisted Structural Crack Detection &nbsp;•&nbsp; YOLO26n-seg &nbsp;•&nbsp; Distributed System</p></div>'
         f'<span class="bs-mode-badge {mc}">{ml}</span></div>',
         unsafe_allow_html=True)
 
@@ -446,8 +467,8 @@ def main():
           else "⚠️ YOLO model not found — use Demo Mode")
     ps = "✅ PDF export ready" if REPORTLAB_AVAILABLE else "⚠️ ReportLab missing"
     st.markdown(
-        f'<div class="bs-info-box">🖥️ <strong>Standalone Mode (Windows — no ROS 2)</strong>'
-        f'&nbsp;|&nbsp; {ms} &nbsp;|&nbsp; {ps}</div>',
+        f'<div class="bs-info-box">🖥️ <strong>Host Dashboard (Laptop — Windows)</strong>'
+        f'&nbsp;|&nbsp; {ms} &nbsp;|&nbsp; {ps} &nbsp;|&nbsp; 📡 Pi IP: <code>{st.session_state.pi_ip}</code></div>',
         unsafe_allow_html=True)
 
     # Status bar
@@ -455,6 +476,11 @@ def main():
     if err:
         st.markdown(f'<div class="bs-status error">⚠ {err}</div>',
                     unsafe_allow_html=True)
+    elif streaming and stream_mode == "pi":
+        st.markdown(
+            f'<div class="bs-status">'
+            f'● Streaming live from Raspberry Pi ({st.session_state.pi_ip}) — YOLO26n-seg running</div>',
+            unsafe_allow_html=True)
     elif streaming and is_demo:
         st.markdown(
             '<div class="bs-status warn">'
@@ -463,28 +489,45 @@ def main():
     elif streaming:
         st.markdown(
             '<div class="bs-status">'
-            '● Streaming live from webcam — YOLO26n-seg running</div>',
+            '● Streaming live from local webcam — YOLO26n-seg running</div>',
             unsafe_allow_html=True)
     else:
         st.markdown(
             '<div class="bs-status warn">'
-            '◌ Stopped — press ▶ Start Camera or 🧪 Demo Mode to begin</div>',
+            '◌ Stopped — connect to 📡 Pi Camera, ▶ Local Webcam, or 🧪 Demo Mode</div>',
             unsafe_allow_html=True)
 
+    # Pi Configuration Expander
+    with st.expander("⚙️ Raspberry Pi Connection Settings", expanded=(not streaming)):
+        c_ip, c_top = st.columns([1, 1])
+        with c_ip:
+            st.session_state["pi_ip"] = st.text_input("Raspberry Pi IP Address", value=st.session_state.get("pi_ip", "10.120.68.129"))
+        with c_top:
+            st.session_state["pi_topic"] = st.text_input("Camera ROS Topic", value=st.session_state.get("pi_topic", "/camera/image_raw"))
+        st.caption("Make sure <code>web_video_server</code> is running on port 8080 of your Pi.")
+
     # Controls
-    c1, c2, c3, _ = st.columns([2, 2, 2, 4])
+    c1, c2, c3, c4 = st.columns([2.5, 2, 2, 1.5])
     with c1:
-        if st.button("▶  Start Camera", key="btn_cam", type="primary",
+        if st.button("📡  Connect Pi Camera", key="btn_pi", type="primary",
                      disabled=streaming, use_container_width=True):
-            start_stream(demo=False); st.rerun()
+            start_stream(mode="pi", pi_ip=st.session_state.pi_ip, pi_topic=st.session_state.pi_topic)
+            st.rerun()
     with c2:
+        if st.button("▶  Local Webcam", key="btn_cam", type="secondary",
+                     disabled=streaming, use_container_width=True):
+            start_stream(mode="webcam")
+            st.rerun()
+    with c3:
         if st.button("🧪  Demo Mode", key="btn_demo", type="secondary",
                      disabled=streaming, use_container_width=True):
-            start_stream(demo=True); st.rerun()
-    with c3:
+            start_stream(mode="demo")
+            st.rerun()
+    with c4:
         if st.button("■  Stop", key="btn_stop", type="secondary",
                      disabled=not streaming, use_container_width=True):
-            stop_stream(); st.rerun()
+            stop_stream()
+            st.rerun()
 
     st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
 
