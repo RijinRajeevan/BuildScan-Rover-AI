@@ -164,50 +164,119 @@ def demo_frame(tick):
                 timestamp=datetime.datetime.now())
 
 
-# ── Threads ────────────────────────────────────────────────
+# ── Global State & Threads ─────────────────────────────────
+_GLOBAL_LOCK = threading.Lock()
+_GLOBAL_DATA = {
+    "snapshot": Snap(),
+    "streaming": True,
+    "stream_mode": "pi",
+    "stream_error": None,
+    "stop_event": None,
+    "thread": None,
+}
+
 def _cam_loop(ev, src):
     model = load_model()
     cap   = cv2.VideoCapture(src)
     if not cap.isOpened():
-        label = f"Pi stream ({src})" if isinstance(src,str) else f"cam {src}"
-        st.session_state["stream_error"] = f"Cannot connect to {label}."
-        st.session_state["streaming"]    = False
-        st.session_state["stream_mode"]  = "idle"
+        label = f"Pi stream ({src})" if isinstance(src, str) else f"cam {src}"
+        with _GLOBAL_LOCK:
+            _GLOBAL_DATA["stream_error"] = f"Cannot connect to {label}."
+            _GLOBAL_DATA["streaming"]    = False
+            _GLOBAL_DATA["stream_mode"]  = "idle"
         ev.set(); return
     while not ev.is_set():
         t0 = time.time()
         ret, frame = cap.read()
-        if not ret: time.sleep(0.05); continue
-        st.session_state["snapshot"] = analyze(model, frame, t0)
+        if not ret: time.sleep(0.04); continue
+        snap = analyze(model, frame, t0)
+        with _GLOBAL_LOCK:
+            _GLOBAL_DATA["snapshot"] = snap
         time.sleep(0.02)
     cap.release()
 
 def _demo_loop(ev):
     tick = 0
     while not ev.is_set():
-        st.session_state["snapshot"] = demo_frame(tick)
+        snap = demo_frame(tick)
+        with _GLOBAL_LOCK:
+            _GLOBAL_DATA["snapshot"] = snap
         tick += 1; time.sleep(0.12)
 
+def inspect_pi_frame():
+    model = load_model()
+    snap_url = f"http://{PI_IP}:{PI_PORT}/snapshot?topic={PI_TOPIC}"
+    try:
+        import urllib.request
+        req = urllib.request.Request(snap_url, headers={'Connection': 'close', 'User-Agent': 'BuildScan/1.0'})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = resp.read()
+        arr = np.frombuffer(data, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is not None:
+            snap = analyze(model, frame, time.time())
+            with _GLOBAL_LOCK:
+                _GLOBAL_DATA["snapshot"] = snap
+            return True, "Analysis complete"
+    except Exception:
+        pass
+    try:
+        cap = cv2.VideoCapture(PI_STREAM_URL)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None:
+                snap = analyze(model, frame, time.time())
+                with _GLOBAL_LOCK:
+                    _GLOBAL_DATA["snapshot"] = snap
+                return True, "Analysis complete"
+    except Exception:
+        pass
+    return False, "Could not capture frame from Pi. Hint: On Pi, run web_video_server with -p server_threads:=4"
+
 def start_stream(mode="pi"):
-    if st.session_state.get("streaming"): return
-    ev = threading.Event()
-    st.session_state.update({"stop_event":ev,"streaming":True,"stream_mode":mode,
-                              "demo_mode":(mode=="demo"),"stream_error":None,
-                              "snapshot":Snap()})
-    if   mode=="demo": t=threading.Thread(target=_demo_loop,args=(ev,),daemon=True)
-    elif mode=="pi":   t=threading.Thread(target=_cam_loop,args=(ev,PI_STREAM_URL),daemon=True)
-    else:              t=threading.Thread(target=_cam_loop,args=(ev,_CAM_IDX),daemon=True)
-    t.start()
-    st.session_state["stream_thread"] = t
+    with _GLOBAL_LOCK:
+        if _GLOBAL_DATA["streaming"] and _GLOBAL_DATA["stream_mode"] == mode:
+            return
+    stop_stream()
+    with _GLOBAL_LOCK:
+        ev = threading.Event()
+        _GLOBAL_DATA["stop_event"]   = ev
+        _GLOBAL_DATA["streaming"]    = True
+        _GLOBAL_DATA["stream_mode"]  = mode
+        _GLOBAL_DATA["stream_error"] = None
+        _GLOBAL_DATA["snapshot"]     = Snap()
+    if mode == "demo":
+        t = threading.Thread(target=_demo_loop, args=(ev,), daemon=True)
+        try:
+            from streamlit.runtime.scriptrunner import add_script_run_ctx
+            add_script_run_ctx(t)
+        except Exception: pass
+        t.start()
+        with _GLOBAL_LOCK:
+            _GLOBAL_DATA["thread"] = t
+    elif mode == "webcam":
+        t = threading.Thread(target=_cam_loop, args=(ev, _CAM_IDX), daemon=True)
+        try:
+            from streamlit.runtime.scriptrunner import add_script_run_ctx
+            add_script_run_ctx(t)
+        except Exception: pass
+        t.start()
+        with _GLOBAL_LOCK:
+            _GLOBAL_DATA["thread"] = t
+    elif mode == "pi":
+        # Native browser streaming via <img> tag: zero lag, 30 FPS, no Python thread blocking
+        pass
 
 def stop_stream():
-    if not st.session_state.get("streaming"): return
-    ev = st.session_state.get("stop_event")
-    if ev: ev.set()
-    t = st.session_state.get("stream_thread")
-    if t and t.is_alive(): t.join(timeout=2.0)
-    st.session_state.update({"streaming":False,"stream_mode":"idle",
-                              "stop_event":None,"stream_thread":None})
+    with _GLOBAL_LOCK:
+        if not _GLOBAL_DATA["streaming"]: return
+        ev = _GLOBAL_DATA.get("stop_event")
+        if ev: ev.set()
+        t = _GLOBAL_DATA.get("thread")
+        _GLOBAL_DATA["streaming"]   = False
+        _GLOBAL_DATA["stream_mode"] = "idle"
+    if t and t.is_alive(): t.join(timeout=1.5)
 
 
 # ── PDF ────────────────────────────────────────────────────
@@ -353,16 +422,12 @@ def main():
     try:    st.html(_CSS)
     except: st.markdown(_CSS, unsafe_allow_html=True)
 
-    defs = {"streaming":False,"demo_mode":False,"stream_mode":"idle",
-            "snapshot":Snap(),"stop_event":None,"stream_thread":None,"stream_error":None}
-    for k,v in defs.items():
-        st.session_state.setdefault(k,v)
-
-    snap  = st.session_state["snapshot"]
-    strm  = st.session_state.get("streaming",False)
-    mode  = st.session_state.get("stream_mode","idle")
-    demo  = st.session_state.get("demo_mode",False)
-    err   = st.session_state.get("stream_error",None)
+    with _GLOBAL_LOCK:
+        snap = _GLOBAL_DATA["snapshot"]
+        strm = _GLOBAL_DATA["streaming"]
+        mode = _GLOBAL_DATA["stream_mode"]
+        err  = _GLOBAL_DATA["stream_error"]
+    demo = (mode == "demo")
 
     if strm and mode=="pi":     pc,dc,pt="p-stream","d-cyan","📡 Pi Camera Live"
     elif strm and demo:         pc,dc,pt="p-demo","d-ora","🧪 Demo Mode"
@@ -399,25 +464,61 @@ def main():
 
     b1,b2,b3,b4 = st.columns([2.5,1.8,1.8,1.5])
     with b1:
-        if st.button("📡  Connect Pi Camera",key="btn_pi",type="primary",
-                     disabled=strm,use_container_width=True):
+        is_pi = (strm and mode=="pi")
+        if st.button("📡  Pi Camera (Live)" if is_pi else "📡  Pi Camera",
+                     key="btn_pi", type="primary" if is_pi else "secondary",
+                     use_container_width=True):
             start_stream("pi"); st.rerun()
     with b2:
-        if st.button("▶  Local Webcam",key="btn_wc",type="secondary",
-                     disabled=strm,use_container_width=True):
+        is_wc = (strm and mode=="webcam")
+        if st.button("▶  Local Webcam", key="btn_wc",
+                     type="primary" if is_wc else "secondary",
+                     use_container_width=True):
             start_stream("webcam"); st.rerun()
     with b3:
-        if st.button("🧪  Demo Mode",key="btn_dm",type="secondary",
-                     disabled=strm,use_container_width=True):
+        is_dm = (strm and mode=="demo")
+        if st.button("🧪  Demo Mode", key="btn_dm",
+                     type="primary" if is_dm else "secondary",
+                     use_container_width=True):
             start_stream("demo"); st.rerun()
     with b4:
-        if st.button("■  Stop",key="btn_st",type="secondary",
-                     disabled=not strm,use_container_width=True):
+        if st.button("■  Stop", key="btn_st", type="secondary",
+                     disabled=not strm, use_container_width=True):
             stop_stream(); st.rerun()
 
     cv, cm = st.columns([3,2], gap="medium")
     with cv:
-        if snap.annotated_frame is not None:
+        if mode == "pi" and strm:
+            st.markdown(f'''
+            <div class="vout">
+              <div class="vbadge">🔴 RASPBERRY PI 4 &bull; LIVE STREAM</div>
+              <img src="{PI_STREAM_URL}" 
+                   style="width: 100%; border-radius: 12px; display: block; border: 1.5px solid rgba(6,182,212,0.5); background: #070d19; aspect-ratio: 4/3; object-fit: contain;" 
+                   alt="Raspberry Pi Camera Stream" />
+            </div>''', unsafe_allow_html=True)
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+            ac1, ac2 = st.columns([1.5, 1])
+            with ac1:
+                if st.button("📸  Scan & Inspect Frame (YOLO26n)", key="btn_pi_scan", type="primary", use_container_width=True):
+                    with st.spinner("Analyzing frame from Pi camera..."):
+                        ok, msg = inspect_pi_frame()
+                        if ok:
+                            st.session_state["show_ai_overlay"] = True
+                            st.rerun()
+                        else:
+                            st.warning(msg)
+            with ac2:
+                if snap.annotated_frame is not None:
+                    txt = "🙈 Hide AI Result" if st.session_state.get("show_ai_overlay") else "👁️ Show AI Result"
+                    if st.button(txt, key="btn_toggle_ov", use_container_width=True):
+                        st.session_state["show_ai_overlay"] = not st.session_state.get("show_ai_overlay", False)
+                        st.rerun()
+
+            if st.session_state.get("show_ai_overlay") and snap.annotated_frame is not None:
+                st.markdown('<div class="vout" style="margin-top:12px;"><div class="vbadge">🎯 AI CRACK DETECTION RESULT</div>', unsafe_allow_html=True)
+                st.image(bgr2pil(snap.annotated_frame), use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+        elif snap.annotated_frame is not None:
             st.markdown('<div class="vout"><div class="vbadge">🔴 CRACK DETECTION LIVE</div>',
                         unsafe_allow_html=True)
             st.image(bgr2pil(snap.annotated_frame), use_container_width=True)
@@ -493,7 +594,7 @@ def main():
 | 🔴 HIGH | Width ≥ 150 px | Urgent structural inspection |
 """)
 
-    if strm:
+    if strm and mode != "pi":
         time.sleep(_REFRESH)
         st.rerun()
 
