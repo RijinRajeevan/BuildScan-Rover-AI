@@ -50,8 +50,8 @@ except ImportError:
     PDF_OK = False
 
 # ── Constants ────────────────────────────────────────────────
-PI_IP          = "10.195.174.129"
-PI_PORT        = 8080
+PI_IP          = os.getenv("BUILDSCAN_PI_IP", "10.181.155.129")
+PI_PORT        = int(os.getenv("BUILDSCAN_PI_PORT", "8080"))
 PI_STREAM      = f"http://{PI_IP}:{PI_PORT}/stream?topic=/image_raw"
 PI_SNAP        = f"http://{PI_IP}:{PI_PORT}/snapshot?topic=/image_raw"
 AI_PORT        = 8081
