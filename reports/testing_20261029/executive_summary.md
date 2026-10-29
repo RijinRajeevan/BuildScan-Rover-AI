@@ -38,3 +38,4 @@ The BUILDScan Rover represents a well-conceived, modern edge-to-workstation robo
 1. **Depth Fusion for True Metric Scaling:** The current pixel-to-millimeter factor ($0.025\,\text{mm/px}$) assumes a fixed distance. Fusing the HC-SR04 ultrasonic range measurement or camera focal length ($f_x, f_y$) is required for certified dimensional measurements.
 2. **Dedicated USB Hub for Pi Camera:** The Logitech Brio 100 occasionally resets when drawing peak power from the Raspberry Pi 4 USB bus. Powering the camera via an externally powered USB hub or buck converter eliminates V4L2 lockups.
 3. **Dataset Archival:** The raw training images referenced in checkpoint logs should be uploaded to an institutional repository (Zenodo / HuggingFace) to enable reproducible benchmark re-runs for the final thesis.
+

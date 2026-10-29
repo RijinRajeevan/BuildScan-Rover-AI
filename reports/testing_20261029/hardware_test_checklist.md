@@ -67,3 +67,4 @@
    - Confirm real-time bounding box and segmentation mask render on dashboard.
    - Click **"🔬 Analyze Current Frame with Gemini"**; confirm validated multimodal diagnosis and civil engineering recommendation appear.
    - Click **"📄 Generate Audit PDF"**; download and archive inspection certificate.
+

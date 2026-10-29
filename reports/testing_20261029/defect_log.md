@@ -116,3 +116,4 @@
   The repository contains `models/yolo26n-seg.pt` and `crack_detection/train.py`, but the raw training, validation, and test image folders are not committed to Git (likely excluded due to repository size limits).
 * **Resolution & Evidence:**
   The complete historical training logs and validation metrics across all 20 epochs were extracted directly from the PyTorch checkpoint metadata (`train_metrics` and `train_results` dictionaries in `yolo26n-seg.pt`), preserving full empirical evidence of model performance.
+

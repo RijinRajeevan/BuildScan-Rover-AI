@@ -64,3 +64,4 @@
 ### Category B7: Crack Measurement & Calibration Mathematics
 * **TC-B7.1:** Verification of polygon mask area aperture formulation ($w = A / L$).
 * **TC-B7.2:** Audit of nominal pixel-to-millimeter scaling assumptions.
+

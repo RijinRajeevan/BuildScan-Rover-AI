@@ -92,3 +92,4 @@ onboard embedded robotics (Pi 4 + ESP32) from high-throughput neural inference
 (Dell G15 RTX 3050 GPU). The workstation dashboard operates independently of
 local ROS 2 build dependencies, ensuring zero-dependency deployment on Windows.
 ===============================================================================
+

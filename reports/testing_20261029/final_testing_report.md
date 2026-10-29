@@ -340,3 +340,4 @@ cpu_count_logical        : 16
 opencv_version           : 4.8.1
 ultralytics_version      : ultralytics
 ```
+

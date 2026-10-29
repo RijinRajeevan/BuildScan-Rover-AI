@@ -51,3 +51,4 @@ This document provides a critical academic assessment of the boundaries and limi
 
 ### 4.2 Network & Rate-Limit Dependencies
 * Gemini API calls require active internet egress from the laptop. While local YOLO inference runs entirely offline at 71 FPS on the internal GPU, Gemini visual reasoning is unavailable in network-isolated basements or tunnels unless buffered for post-inspection cloud sync.
+
