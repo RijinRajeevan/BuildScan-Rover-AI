@@ -21,8 +21,14 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual environments
+# Virtual environments and secrets
 .env
+.env.*
+*.env
+secrets/
+secrets.yaml
+*.bak
+*.before-*
 .venv
 env/
 venv/
