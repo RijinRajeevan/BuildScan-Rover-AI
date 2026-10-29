@@ -1,0 +1,49 @@
+{
+  "model_file": "models\\yolo26n-seg.pt",
+  "model_file_size_mb": 6.23,
+  "architecture_task": "segment",
+  "class_names": {
+    "0": "crack"
+  },
+  "num_classes": 1,
+  "total_parameters": 3053055,
+  "trainable_parameters": 0,
+  "training_checkpoint_date": "2026-04-21T22:13:27.638036",
+  "ultralytics_version_at_training": "8.4.41",
+  "training_epochs": 20,
+  "training_batch_size": 16,
+  "training_imgsz": 640,
+  "training_dataset_config": "/usr/local/lib/python3.12/dist-packages/ultralytics/cfg/datasets/crack-seg.yaml",
+  "training_optimizer": "auto",
+  "final_checkpoint_metrics": {
+    "metrics/precision(B)": 0.84082,
+    "metrics/recall(B)": 0.71486,
+    "metrics/mAP50(B)": 0.78391,
+    "metrics/mAP50-95(B)": 0.61221,
+    "metrics/precision(M)": 0.7746,
+    "metrics/recall(M)": 0.65462,
+    "metrics/mAP50(M)": 0.67857,
+    "metrics/mAP50-95(M)": 0.22943,
+    "val/box_loss": 1.03323,
+    "val/seg_loss": 1.28152,
+    "val/cls_loss": 0.9403,
+    "val/dfl_loss": 0.01741,
+    "val/sem_loss": 0.0,
+    "fitness": 0.84163
+  },
+  "epoch_metrics_summary": {
+    "epochs_recorded": 20,
+    "final_epoch": 20,
+    "final_box_precision": 0.84082,
+    "final_box_recall": 0.71486,
+    "final_box_mAP50": 0.78391,
+    "final_box_mAP50_95": 0.61221,
+    "final_mask_precision": 0.7746,
+    "final_mask_recall": 0.65462,
+    "final_mask_mAP50": 0.67857,
+    "final_mask_mAP50_95": 0.22943,
+    "final_val_box_loss": 1.03323,
+    "final_val_seg_loss": 1.28152,
+    "final_val_cls_loss": 0.9403
+  }
+}

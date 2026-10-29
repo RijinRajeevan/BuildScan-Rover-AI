@@ -1,0 +1,37 @@
+======================================================================
+ BUILDSCAN ROVER AI - AUTOMATED TEST SUITE EXECUTION LOG
+======================================================================
+[PASS   ] B1.1  (Model Loading       ) - Weight File Exists
+          Details: Found models\yolo26n-seg.pt (6.2MB)
+[PASS   ] B1.2  (Model Loading       ) - Model Instantiation
+          Details: Ultralytics YOLO loaded; task='segment'
+[PASS   ] B1.3  (Model Loading       ) - Class Label Verification
+          Details: Classes verified: {0: 'crack'} (contains 'crack': True)
+[PASS   ] B1.4  (Model Loading       ) - Missing Model Error Handling
+          Details: Correctly raised exception: FileNotFoundError
+[PASS   ] B2.1  (Image Pipeline      ) - Input Frame Immutability
+          Details: Original frame untouched: True
+[PASS   ] B2.2  (Image Pipeline      ) - Corrupt Input Recovery
+          Details: Handled None frame cleanly: 'Null frame'
+[PASS   ] B2.3  (Image Pipeline      ) - Arbitrary Resolution Handling
+          Details: Processed 1080p frame in 14.0ms
+[BLOCKED] B3.1  (Camera Receiver     ) - Pi Health Endpoint Access
+          Details: Pi host 10.21.210.129 unreachable (Host powered off or disconnected)
+[PASS   ] B3.2  (Camera Receiver     ) - Stale Frame Detection
+          Details: Stale frame correctly suppressed: connected=False
+[PASS   ] B4.1  (Dashboard           ) - Dashboard Standby Graphic Generator
+          Details: Generated standby indicator (30635 bytes)
+[PASS   ] B4.2  (Dashboard           ) - Inspection PDF Report Generator
+          Details: Generated valid PDF (2964 bytes)
+[PASS   ] B5.1  (Gemini Analysis     ) - Gemini API Key Configuration
+          Details: Key configured (length 53, git-ignored in .env)
+[PASS   ] B5.2  (Gemini Analysis     ) - Gemini Multimodal Pydantic Schema
+          Details: Schema validation verified (crack_visible=True)
+[PASS   ] B6.1  (ROS 2 Architecture  ) - ROS 2 Source Workspace Packages
+          Details: Found all 6 core packages in ros2_ws/src
+[NOT RUN] B6.2  (ROS 2 Architecture  ) - Host ROS 2 Humble Runtime
+          Details: Laptop runs Windows Python 3.11 workstation stack; ROS 2 nodes targeted for Pi 4 Ubuntu 22.04
+[PASS   ] B7.1  (Measurement Calibration) - Aperture Geometry Mathematics
+          Details: Aperture calculation verified: 10.0 px (exact match)
+[PASS   ] B7.2  (Measurement Calibration) - Pixel-to-Millimetre Calibration Factor
+          Details: Configured reference: 1 px ≈ 0.025 mm (uncalibrated monocular approximation)

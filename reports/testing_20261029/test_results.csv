@@ -1,0 +1,18 @@
+test_id,category,name,result,details
+B1.1,Model Loading,Weight File Exists,PASS,Found models\yolo26n-seg.pt (6.2MB)
+B1.2,Model Loading,Model Instantiation,PASS,Ultralytics YOLO loaded; task='segment'
+B1.3,Model Loading,Class Label Verification,PASS,Classes verified: {0: 'crack'} (contains 'crack': True)
+B1.4,Model Loading,Missing Model Error Handling,PASS,Correctly raised exception: FileNotFoundError
+B2.1,Image Pipeline,Input Frame Immutability,PASS,Original frame untouched: True
+B2.2,Image Pipeline,Corrupt Input Recovery,PASS,Handled None frame cleanly: 'Null frame'
+B2.3,Image Pipeline,Arbitrary Resolution Handling,PASS,Processed 1080p frame in 14.0ms
+B3.1,Camera Receiver,Pi Health Endpoint Access,BLOCKED,Pi host 10.21.210.129 unreachable (Host powered off or disconnected)
+B3.2,Camera Receiver,Stale Frame Detection,PASS,Stale frame correctly suppressed: connected=False
+B4.1,Dashboard,Dashboard Standby Graphic Generator,PASS,Generated standby indicator (30635 bytes)
+B4.2,Dashboard,Inspection PDF Report Generator,PASS,Generated valid PDF (2964 bytes)
+B5.1,Gemini Analysis,Gemini API Key Configuration,PASS,"Key configured (length 53, git-ignored in .env)"
+B5.2,Gemini Analysis,Gemini Multimodal Pydantic Schema,PASS,Schema validation verified (crack_visible=True)
+B6.1,ROS 2 Architecture,ROS 2 Source Workspace Packages,PASS,Found all 6 core packages in ros2_ws/src
+B6.2,ROS 2 Architecture,Host ROS 2 Humble Runtime,NOT RUN,Laptop runs Windows Python 3.11 workstation stack; ROS 2 nodes targeted for Pi 4 Ubuntu 22.04
+B7.1,Measurement Calibration,Aperture Geometry Mathematics,PASS,Aperture calculation verified: 10.0 px (exact match)
+B7.2,Measurement Calibration,Pixel-to-Millimetre Calibration Factor,PASS,Configured reference: 1 px ≈ 0.025 mm (uncalibrated monocular approximation)

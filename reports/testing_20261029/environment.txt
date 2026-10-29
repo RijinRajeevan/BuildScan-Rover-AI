@@ -1,0 +1,19 @@
+======================================================================
+ BUILDSCAN ROVER AI - TEST EXECUTION ENVIRONMENT AUDIT
+======================================================================
+timestamp                : 2026-10-29 20:34:07
+os_platform              : Windows-10-10.0.26300-SP0
+os_version               : 10.0.26300
+processor                : Intel64 Family 6 Model 183 Stepping 1, GenuineIntel
+python_version           : 3.11.0
+python_executable        : C:\Program Files\Python311\python.exe
+pytorch_version          : 2.7.1+cu118
+cuda_available           : True
+cuda_version             : 11.8
+gpu_device_name          : NVIDIA GeForce RTX 3050 6GB Laptop GPU
+gpu_count                : 1
+system_ram_gb            : 15.69
+cpu_count_logical        : 16
+cpu_count_physical       : 10
+opencv_version           : 4.13.0
+ultralytics_version      : ultralytics.models.yolo.model

@@ -1,0 +1,5 @@
+device,resolution,iterations,mean_latency_ms,median_latency_ms,p95_latency_ms,min_latency_ms,max_latency_ms,std_latency_ms,sustained_fps,gpu_vram_peak_mb,process_ram_mb
+GPU,640x640,100,14.85,14.88,17.93,11.5,22.07,1.93,67.42,80.6,959.4
+GPU,320x320,100,13.06,12.72,18.88,8.59,25.36,3.24,76.58,80.6,964.5
+CPU,640x640,25,77.8,73.08,92.27,68.11,95.17,8.64,12.87,0.0,1036.8
+CPU,320x320,25,38.01,34.96,51.11,34.22,53.36,5.63,26.32,0.0,1043.5

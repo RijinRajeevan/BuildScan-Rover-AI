@@ -1,0 +1,121 @@
+[
+  {
+    "test_id": "B1.1",
+    "category": "Model Loading",
+    "name": "Weight File Exists",
+    "result": "PASS",
+    "details": "Found models\\yolo26n-seg.pt (6.2MB)"
+  },
+  {
+    "test_id": "B1.2",
+    "category": "Model Loading",
+    "name": "Model Instantiation",
+    "result": "PASS",
+    "details": "Ultralytics YOLO loaded; task='segment'"
+  },
+  {
+    "test_id": "B1.3",
+    "category": "Model Loading",
+    "name": "Class Label Verification",
+    "result": "PASS",
+    "details": "Classes verified: {0: 'crack'} (contains 'crack': True)"
+  },
+  {
+    "test_id": "B1.4",
+    "category": "Model Loading",
+    "name": "Missing Model Error Handling",
+    "result": "PASS",
+    "details": "Correctly raised exception: FileNotFoundError"
+  },
+  {
+    "test_id": "B2.1",
+    "category": "Image Pipeline",
+    "name": "Input Frame Immutability",
+    "result": "PASS",
+    "details": "Original frame untouched: True"
+  },
+  {
+    "test_id": "B2.2",
+    "category": "Image Pipeline",
+    "name": "Corrupt Input Recovery",
+    "result": "PASS",
+    "details": "Handled None frame cleanly: 'Null frame'"
+  },
+  {
+    "test_id": "B2.3",
+    "category": "Image Pipeline",
+    "name": "Arbitrary Resolution Handling",
+    "result": "PASS",
+    "details": "Processed 1080p frame in 14.0ms"
+  },
+  {
+    "test_id": "B3.1",
+    "category": "Camera Receiver",
+    "name": "Pi Health Endpoint Access",
+    "result": "BLOCKED",
+    "details": "Pi host 10.21.210.129 unreachable (Host powered off or disconnected)"
+  },
+  {
+    "test_id": "B3.2",
+    "category": "Camera Receiver",
+    "name": "Stale Frame Detection",
+    "result": "PASS",
+    "details": "Stale frame correctly suppressed: connected=False"
+  },
+  {
+    "test_id": "B4.1",
+    "category": "Dashboard",
+    "name": "Dashboard Standby Graphic Generator",
+    "result": "PASS",
+    "details": "Generated standby indicator (30635 bytes)"
+  },
+  {
+    "test_id": "B4.2",
+    "category": "Dashboard",
+    "name": "Inspection PDF Report Generator",
+    "result": "PASS",
+    "details": "Generated valid PDF (2964 bytes)"
+  },
+  {
+    "test_id": "B5.1",
+    "category": "Gemini Analysis",
+    "name": "Gemini API Key Configuration",
+    "result": "PASS",
+    "details": "Key configured (length 53, git-ignored in .env)"
+  },
+  {
+    "test_id": "B5.2",
+    "category": "Gemini Analysis",
+    "name": "Gemini Multimodal Pydantic Schema",
+    "result": "PASS",
+    "details": "Schema validation verified (crack_visible=True)"
+  },
+  {
+    "test_id": "B6.1",
+    "category": "ROS 2 Architecture",
+    "name": "ROS 2 Source Workspace Packages",
+    "result": "PASS",
+    "details": "Found all 6 core packages in ros2_ws/src"
+  },
+  {
+    "test_id": "B6.2",
+    "category": "ROS 2 Architecture",
+    "name": "Host ROS 2 Humble Runtime",
+    "result": "NOT RUN",
+    "details": "Laptop runs Windows Python 3.11 workstation stack; ROS 2 nodes targeted for Pi 4 Ubuntu 22.04"
+  },
+  {
+    "test_id": "B7.1",
+    "category": "Measurement Calibration",
+    "name": "Aperture Geometry Mathematics",
+    "result": "PASS",
+    "details": "Aperture calculation verified: 10.0 px (exact match)"
+  },
+  {
+    "test_id": "B7.2",
+    "category": "Measurement Calibration",
+    "name": "Pixel-to-Millimetre Calibration Factor",
+    "result": "PASS",
+    "details": "Configured reference: 1 px \u2248 0.025 mm (uncalibrated monocular approximation)"
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "local_dataset_directory_found": false,
+  "local_images_found": 0,
+  "local_annotations_found": 0,
+  "evaluation_split_status": "BLOCKED_NO_LOCAL_LABELED_TEST_SPLIT",
+  "explanation": "The repository contains the trained weights (models/yolo26n-seg.pt) and the training entry script (crack_detection/train.py), but the raw labeled image-mask dataset is not stored in the repository. Model performance metrics were extracted from the embedded checkpoint validation logs.",
+  "source_dataset_reference": "/usr/local/lib/python3.12/dist-packages/ultralytics/cfg/datasets/crack-seg.yaml"
+}
