@@ -537,6 +537,8 @@ def _ensure_services():
     threading.Thread(target=_run_inference_worker, daemon=True, name="bscan-infer").start()
     log.info("BuildScan background services started (MJPEG Server + YOLO Inference Worker)")
 
+_ensure_services()
+
 
 # ════════════════════════════════════════════════════════════
 #   PDF AUDIT REPORT GENERATOR
@@ -1166,5 +1168,4 @@ def main():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-if __name__ == "__main__":
-    main()
+main()
