@@ -43,3 +43,12 @@ venv.bak/
 *.swo
 .DS_Store
 Thumbs.db
+
+# TeX build & tools
+tools/
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
